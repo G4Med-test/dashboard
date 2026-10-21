@@ -388,6 +388,8 @@ def main():
     data = {
         "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "org": ORG,
+        # The page starts and follows update.yml in this repository ("Update now").
+        "dashboard_repo": os.environ.get("GITHUB_REPOSITORY", f"{ORG}/dashboard"),
         "results_repo": results_url or f"https://github.com/{ORG}/validation-results",
         "tests": summaries,
         "orphan_results": sorted(set(publications) - {t["name"] for t in summaries}),

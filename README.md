@@ -77,6 +77,25 @@ runner: the PR diff is what needs reviewing.
    runs whose results were published.
 5. Start *Actions → Update dashboard → Run workflow* once.
 
+## Manual update
+
+**↻ Update now**, at the top right of both pages, starts `update.yml` without waiting for
+the cron:
+
+- **Without a token** it opens *Actions → Update dashboard* on GitHub, where anyone with
+  write access to this repository clicks *Run workflow*.
+- **With a token** (*Use a token*) it starts the run itself. Fine-grained token, resource
+  owner `G4Med-test`, only the `dashboard` repository, *Actions: Read and write*. It is kept
+  in the browser's `localStorage`, which every Pages site of the organization can read
+  (they share `g4med-test.github.io`): give it nothing more than that permission.
+
+Every run of the workflow, scheduled or manual, shows a progress bar with the current step
+and the time left, estimated from the step durations of the last passed run. When the run
+passes, the page waits for the new `data.json` and reloads the data. Without a token the
+page uses GitHub's unauthenticated API, 60 calls per hour shared by everyone behind the same
+IP address: it checks for runs every 5 minutes and follows one every 15 s (with a token, 30 s
+and 4 s). If the limit is reached the page says so and resumes when it resets.
+
 ## Notes
 
 - **Scheduled workflows are disabled after 60 days** without activity in a public

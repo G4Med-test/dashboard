@@ -26,7 +26,10 @@ td.num { white-space: nowrap; }
     <div class="desc" id="desc"></div>
     <div class="updated" id="updated"></div>
   </div>
-  <div class="links" id="links"></div>
+  <div class="hside">
+    <div class="links" id="links"></div>
+    <div id="refresh"></div>
+  </div>
 </header>
 <main>
   <div class="kpis" id="kpis"></div>
@@ -209,6 +212,7 @@ async function load() {
 }
 load();
 setInterval(load, 60000);
+initRefresh(document.getElementById("refresh"), load);
 </script>
 </body>
 </html>

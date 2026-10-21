@@ -108,3 +108,29 @@ a.pill:hover { text-decoration: none; filter: brightness(.95); }
 .legend { display: flex; gap: 14px; font-size: 12px; color: var(--muted); padding: 0 14px 10px; flex-wrap: wrap; }
 .legend i { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; }
 footer { max-width: 1320px; margin: 0 auto; padding: 0 16px 32px; font-size: 12px; color: var(--muted); }
+/* Update now */
+.hside { display: flex; flex-direction: column; align-items: flex-end; gap: 10px; }
+.refresh { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
+.refresh .row { display: flex; align-items: center; gap: 10px; }
+button.btn { font-family: inherit; cursor: pointer; }
+button.btn:disabled { color: var(--muted); border-color: var(--line); cursor: default; }
+.linkbtn { border: 0; background: none; padding: 0; color: var(--accent); font: inherit; font-size: 12.5px; cursor: pointer; }
+.linkbtn:hover { text-decoration: underline; }
+.progress { width: 300px; max-width: 100%; }
+.progress .sub { text-align: right; margin-top: 4px; }
+.bar { height: 6px; border-radius: 3px; background: var(--idle-bg); overflow: hidden; }
+.bar i { display: block; height: 100%; width: 0; border-radius: 3px; background: var(--run); transition: width 1s linear; }
+.bar.indet i { width: 35%; animation: indet 1.4s ease-in-out infinite; }
+.bar.ok i { background: var(--ok); } .bar.bad i { background: var(--bad); }
+@keyframes indet { from { transform: translateX(-100%); } to { transform: translateX(290%); } }
+@media (prefers-reduced-motion: reduce) { .bar i { transition: none; } .bar.indet i { animation: none; width: 100%; opacity: .4; } }
+@media (max-width: 640px) { .hside, .refresh { align-items: flex-start; } .progress .sub { text-align: left; } }
+dialog.tok { max-width: 440px; width: calc(100% - 32px); border: 1px solid var(--line); border-radius: 10px; padding: 18px 20px;
+  background: var(--panel); color: var(--ink); }
+dialog.tok::backdrop { background: rgb(0 0 0 / .35); }
+dialog.tok h3 { margin: 0 0 8px; font-size: 15px; font-weight: 600; }
+dialog.tok p { margin: 0 0 12px; color: var(--muted); font-size: 13px; }
+dialog.tok input { width: 100%; padding: 7px 9px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--ink);
+  font: 12.5px "IBM Plex Mono", ui-monospace, monospace; }
+dialog.tok .row { display: flex; gap: 8px; margin-top: 14px; }
+dialog.tok .row span { flex: 1; }

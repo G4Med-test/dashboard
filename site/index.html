@@ -14,7 +14,10 @@
     <h1>G4Med <span>· Geant4 test status</span></h1>
     <div class="updated" id="updated">Loading…</div>
   </div>
-  <div class="updated"><a id="orglink" href="#">Organization</a> · <a id="reslink" href="#">validation-results</a></div>
+  <div class="hside">
+    <div class="updated"><a id="orglink" href="#">Organization</a> · <a id="reslink" href="#">validation-results</a></div>
+    <div id="refresh"></div>
+  </div>
 </header>
 <main>
   <div class="kpis" id="kpis"></div>
@@ -151,6 +154,7 @@ async function load() {
 }
 load();
 setInterval(load, 60000);
+initRefresh(document.getElementById("refresh"), load);
 setInterval(() => data && render(), 15000);
 </script>
 </body>
