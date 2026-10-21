@@ -1,0 +1,62 @@
+name: Update dashboard
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"   # GitHub may delay scheduled runs by several minutes
+  workflow_dispatch:          # by hand, or from the test pipeline (see README)
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: dashboard
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-24.04
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check out validation-results (full history, for publication dates)
+        uses: actions/checkout@v4
+        with:
+          repository: G4Med-test/validation-results
+          path: validation-results
+          fetch-depth: 0
+          token: ${{ secrets.DASHBOARD_TOKEN || github.token }}
+
+      # Details of completed runs never change: keep them between updates so that
+      # only new runs cost API calls. A new key is saved every time; restore-keys
+      # picks the most recent one.
+      - name: Restore run-detail cache
+        uses: actions/cache@v4
+        with:
+          path: cache
+          key: runs-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: runs-
+
+      - name: Collect pipeline status
+        env:
+          # GITHUB_TOKEN reads the org's public repos; private test repos need
+          # DASHBOARD_TOKEN (fine-grained: Actions, Contents, Pull requests,
+          # Deployments and Metadata, all read-only).
+          GITHUB_TOKEN: ${{ secrets.DASHBOARD_TOKEN || github.token }}
+          RESULTS_DIR: validation-results
+          OUTPUT_DIR: site
+          CACHE_FILE: cache/runs.json
+        run: python3 scripts/collect.py
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+      - id: deploy
+        uses: actions/deploy-pages@v4
