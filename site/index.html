@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>G4Med test status</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <div>
+    <h1>G4Med <span>· Geant4 test status</span></h1>
+    <div class="updated" id="updated">Loading…</div>
+  </div>
+  <div class="updated"><a id="orglink" href="#">Organization</a> · <a id="reslink" href="#">validation-results</a></div>
+</header>
+<main>
+  <div class="kpis" id="kpis"></div>
+  <div class="panel">
+    <table class="wide">
+      <thead><tr>
+        <th>Test</th><th>Status</th><th>Last run</th><th>Duration</th>
+        <th>Geant4</th><th>Results publication</th><th>Pull requests</th><th>History</th>
+      </tr></thead>
+      <tbody id="rows"><tr><td colspan="8" class="empty">Loading…</td></tr></tbody>
+    </table>
+  </div>
+</main>
+<footer id="foot"></footer>
+
+<script src="common.js"></script>
+<script>
+let data = null, filter = "all";
+
+function testState(t) {
+  if (t.running.length) return "running";
+  const c = t.last_completed?.conclusion;
+  if (!c) return "never";
+  return c === "success" ? "ok" : "failing";
+}
+const awaiting = t => t.prs.filter(p => p.state === "awaiting_approval");
+const pubFailed = t => ["failure", "cancelled", "timed_out"].includes(t.last_completed?.publish);
+
+function statusCell(t) {
+  const r = t.running[0];
+  if (r) {
+    const cur = r.current;
+    const what = cur ? `${esc(cur.job)}${cur.step ? " · " + esc(cur.step) : ""}${cur.parallel > 1 ? ` (+${cur.parallel - 1} more)` : ""}` : "";
+    return `<a class="pill ${cls(r.status)}" href="${esc(r.url)}">${esc(label(r.status))} for ${since(r.started_at)}</a>
+      <div class="sub">${what}${cur?.runner ? ` <span class="mono">@${esc(cur.runner)}</span>` : ""}</div>${stagesBar(r.stages)}`;
+  }
+  const l = t.last_completed;
+  if (!l) return `<span class="pill idle">Never run</span>`;
+  return `<a class="pill ${cls(l.conclusion)}" href="${esc(l.url)}">${esc(label(l.conclusion))}</a>${stagesBar(l.stages)}`;
+}
+
+function lastRunCell(t) {
+  const l = t.running[0] || t.last_completed;
+  if (!l) return "—";
+  return `<div title="${esc(fullDate(l.started_at))}">${ago(l.started_at)}</div>
+    <div class="sub">${esc(l.event)} · <span class="mono">${esc(l.branch)}@${esc(l.sha.slice(0, 7))}</span>${l.actor ? " · " + esc(l.actor) : ""}</div>`;
+}
+
+function durationCell(t) {
+  const l = t.last_completed;
+  const med = median(t.history.filter(h => h.duration_s && h.conclusion === "success" && h.scope !== "github").map(h => h.duration_s));
+  return `<div class="mono">${fmtDur(l?.duration_s)}</div>${med ? `<div class="sub" title="Median duration of passed full pipelines">median ${fmtDur(med)}</div>` : ""}`;
+}
+
+function geantCell(t) {
+  const l = t.running[0]?.geant4 ? t.running[0] : t.last_completed;
+  if (l?.geant4) return `<span class="mono">${esc(l.geant4)}</span>${l.geant4_source === "provenance" ? `<div class="sub">from provenance.json</div>` : ""}`;
+  const p = t.published?.geant4_version;
+  return p ? `<span class="mono muted">${esc(p)}</span><div class="sub">of last published results</div>` : "—";
+}
+
+function publishCell(t) {
+  const l = t.last_completed, p = t.published, r = t.running[0];
+  let out = "";
+  if (r) out += `<span class="pill run">Pending</span>`;
+  else if (l?.publish) {
+    const st = l.publish === "skipped" ? "not_run" : l.publish;
+    out += `<span class="pill ${st === "not_run" ? "idle" : cls(st)}">${esc(label(st))}</span>`;
+  }
+  if (p) {
+    out += `<div class="sub">last: <a href="${esc(t.links.results)}">${ago(p.date)}</a>${p.plots != null ? ` · ${p.plots} plot${p.plots === 1 ? "" : "s"}` : ""}</div>`;
+    if (l && p.sha !== l.sha && l.conclusion === "success") out += `<div class="warn">published commit ≠ last run</div>`;
+  } else out += `<div class="sub">nothing published yet</div>`;
+  return out;
+}
+
+function prCell(t) {
+  if (!t.prs.length) return `<span class="muted">—</span>`;
+  const order = ["awaiting_approval", "running", "checks_running", "checks_failed", "no_ci", "completed"];
+  const prs = [...t.prs].sort((a, b) => order.indexOf(a.state) - order.indexOf(b.state));
+  return prs.slice(0, 3).map(p => `<div class="prline">
+      <div>${prPill(p)}</div>
+      <div class="sub"><a href="${esc(p.url)}">#${p.number}</a> ${esc(p.author)}${p.action ? " · " + prAction(p, true) : ""}</div>
+    </div>`).join("") + (prs.length > 3 ? `<div class="sub">+${prs.length - 3} more</div>` : "");
+}
+
+function histCell(t) {
+  const h = [...t.history].reverse();
+  const max = Math.max(...h.map(x => x.duration_s || 0), 1);
+  return `<div class="hist">${h.map(x => {
+    const c = cls(runState(x));
+    const ht = x.duration_s ? Math.max(4, Math.round(26 * x.duration_s / max)) : 26;
+    return `<a class="${c}${x.scope === "github" ? " gh" : ""}" style="height:${ht}px" href="${esc(x.url)}"
+      title="${esc(fmtDate(x.started_at))} · ${esc(x.event)} · ${esc(label(runState(x)))} · ${fmtDur(x.duration_s)}"></a>`;
+  }).join("")}</div>`;
+}
+
+function render() {
+  const tests = data.tests;
+  const counts = {all: tests.length, running: 0, ok: 0, failing: 0, never: 0};
+  tests.forEach(t => counts[testState(t)]++);
+  const kp = [["all", "Tests", counts.all], ["running", "Running", counts.running],
+              ["approval", "Awaiting approval", tests.reduce((n, t) => n + awaiting(t).length, 0), "attn"],
+              ["failing", "Last run failed", counts.failing], ["pubfail", "Publication failed", tests.filter(pubFailed).length]];
+  document.getElementById("kpis").innerHTML = kp.map(([k, l, n, c]) =>
+    `<button class="kpi" data-f="${k}" aria-pressed="${filter === k}"><b class="${n && c ? c : ""}">${n}</b><small>${l}</small></button>`).join("");
+  document.querySelectorAll(".kpi").forEach(b => b.onclick = () => { filter = filter === b.dataset.f ? "all" : b.dataset.f; render(); });
+
+  const keep = {all: () => true, approval: t => awaiting(t).length, pubfail: pubFailed};
+  const shown = tests.filter(keep[filter] || (t => testState(t) === filter));
+  document.getElementById("rows").innerHTML = shown.length ? shown.map(t => `<tr class="click" data-t="${esc(t.name)}">
+    <td class="name"><a class="t" href="test.html?t=${encodeURIComponent(t.name)}">${esc(t.name)}</a>
+      ${t.description ? `<div class="desc">${esc(t.description)}</div>` : ""}
+      <div class="sub"><a href="${esc(t.links.repo)}">repo</a>${t.links.results ? ` · <a href="${esc(t.links.results)}">outputs</a>` : ""}</div></td>
+    <td>${statusCell(t)}</td><td>${lastRunCell(t)}</td><td>${durationCell(t)}</td>
+    <td>${geantCell(t)}</td><td>${publishCell(t)}</td><td>${prCell(t)}</td><td>${histCell(t)}</td></tr>`).join("")
+    : `<tr><td colspan="8" class="empty">No tests in this category</td></tr>`;
+  document.querySelectorAll("tr.click").forEach(tr => tr.onclick = e => {
+    if (!e.target.closest("a")) location.href = `test.html?t=${encodeURIComponent(tr.dataset.t)}`;
+  });
+
+  setUpdated(document.getElementById("updated"), data.generated_at);
+  document.getElementById("orglink").href = `https://github.com/${data.org}`;
+  document.getElementById("reslink").href = data.results_repo;
+  const notes = [];
+  if (data.orphan_results.length) notes.push(`Results in validation-results with no test repository: ${data.orphan_results.join(", ")}.`);
+  if (data.undetailed_runs) notes.push(`${data.undetailed_runs} older runs are still being indexed.`);
+  document.getElementById("foot").textContent = notes.join(" ");
+}
+
+async function load() {
+  try { data = await getJSON("data.json"); render(); }
+  catch (e) { document.getElementById("updated").textContent = "Could not load data.json"; }
+}
+load();
+setInterval(load, 60000);
+setInterval(() => data && render(), 15000);
+</script>
+</body>
+</html>

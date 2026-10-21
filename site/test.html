@@ -1,0 +1,214 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Test runs</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+<style>
+.bars { display: flex; align-items: flex-end; gap: 2px; height: 140px; border-bottom: 1px solid var(--line); position: relative; }
+.bars a { flex: 1; max-width: 40px; min-height: 3px; border-radius: 2px 2px 0 0; background: var(--idle); }
+.bars a.ok { background: var(--ok); } .bars a.bad { background: var(--bad); } .bars a.run { background: var(--run); }
+.bars a.gate { background: var(--gate); } .bars a.gh { opacity: .4; }
+.bars .ymax { position: absolute; top: -2px; right: 0; font-size: 11px; color: var(--muted); }
+.axis { display: flex; justify-content: space-between; font-size: 11px; color: var(--muted); padding-top: 4px; }
+.prtitle { font-weight: 600; }
+td.num { white-space: nowrap; }
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <a class="crumb" href="./">← All tests</a>
+    <h1 id="title">Loading…</h1>
+    <div class="desc" id="desc"></div>
+    <div class="updated" id="updated"></div>
+  </div>
+  <div class="links" id="links"></div>
+</header>
+<main>
+  <div class="kpis" id="kpis"></div>
+
+  <h2>Open pull requests <small id="prnote"></small></h2>
+  <div class="prs" id="prs"></div>
+
+  <h2>Run duration <small>oldest → newest · faded bars: GitHub checks only</small></h2>
+  <div class="panel">
+    <div class="chart"><div class="bars" id="bars"></div><div class="axis" id="axis"></div></div>
+    <div class="legend">
+      <span><i style="background:var(--ok)"></i>Passed</span><span><i style="background:var(--bad)"></i>Failed / cancelled</span>
+      <span><i style="background:var(--run)"></i>Running</span><span><i style="background:var(--gate)"></i>Awaiting approval</span>
+    </div>
+  </div>
+
+  <h2>Runs <small id="runcount"></small>
+    <span class="seg" id="seg"></span></h2>
+  <div class="panel">
+    <table class="wide">
+      <thead><tr><th>Run</th><th>Started</th><th>Trigger</th><th>Scope</th><th>Status</th><th>Duration</th><th>Geant4</th><th>Published</th></tr></thead>
+      <tbody id="runs"></tbody>
+    </table>
+  </div>
+
+  <h2>Publications to validation-results <small id="pubnote"></small></h2>
+  <div class="panel">
+    <table>
+      <thead><tr><th>Date</th><th>Source commit</th><th>Geant4</th><th>Results commit</th></tr></thead>
+      <tbody id="pubs"></tbody>
+    </table>
+  </div>
+</main>
+
+<script src="common.js"></script>
+<script>
+const name = new URLSearchParams(location.search).get("t");
+let test = null, overview = null, runFilter = "all";
+
+const FILTERS = [["all", "All"], ["full", "Full pipeline"], ["github", "GitHub only"], ["failed", "Failed"], ["pr", "Pull requests"]];
+const keepRun = {
+  all: () => true, full: r => r.scope === "full", github: r => r.scope === "github",
+  failed: r => cls(runState(r)) === "bad", pr: r => r.event === "pull_request",
+};
+
+function flow(pr) {
+  // Opened → GitHub checks → Approval → Padova & validation
+  const st = pr.state, fail = pr.run && pr.run.conclusion && pr.run.conclusion !== "success";
+  const steps = [["Opened", "done"],
+    ["GitHub checks", {no_ci: "", checks_running: "now", checks_failed: "fail"}[st] ?? "done"],
+    ["Approval", {awaiting_approval: "gatenow", running: "done", completed: "done"}[st] ?? ""],
+    ["Padova & validation", {running: "now", completed: fail ? "fail" : "done"}[st] ?? ""]];
+  return `<div class="flow">${steps.map(([l, c], i) =>
+    `${i ? `<span class="fline ${c === "done" || c === "fail" || c === "now" || c === "gatenow" ? "done" : ""}"></span>` : ""}
+     <div class="fstep ${c}"><span class="fdot"></span>${l}</div>`).join("")}</div>`;
+}
+
+function prDetail(pr) {
+  const parts = [];
+  if (pr.state === "awaiting_approval") {
+    const env = (pr.pending || []).map(p => `${p.environment}${p.reviewers.length ? " (" + p.reviewers.join(", ") + ")" : ""}`);
+    parts.push(env.length ? `Waiting for a reviewer of ${esc(env.join("; "))}` : "GitHub checks passed: an authorized person must approve it to run on Padova");
+  }
+  if (pr.run?.status && pr.run.status !== "completed") parts.push(`run started ${ago(pr.run.started_at)}`);
+  else if (pr.run?.duration_s) parts.push(`last run ${fmtDur(pr.run.duration_s)}`);
+  if (pr.from_fork) parts.push("from a fork");
+  if (pr.draft) parts.push("draft");
+  return parts.join(" · ");
+}
+
+function renderPRs() {
+  const prs = test.prs;
+  document.getElementById("prnote").textContent = prs.length ? `${prs.length} open` : "";
+  document.getElementById("prs").innerHTML = prs.length ? prs.map(p => `
+    <div class="prcard ${p.state === "awaiting_approval" ? "attn" : ""}">
+      <div>
+        <div><a class="prtitle" href="${esc(p.url)}">#${p.number} ${esc(p.title)}</a></div>
+        <div class="sub">${esc(p.author)} · <span class="mono">${esc(p.head)}@${esc(p.head_sha.slice(0, 7))}</span> · opened ${ago(p.created_at)}</div>
+        <div style="margin-top:6px">${prPill(p)}</div>
+        <div class="sub">${prDetail(p)}</div>
+      </div>
+      ${flow(p)}
+      <div>${prAction(p)}</div>
+    </div>`).join("") : `<div class="panel empty">No open pull requests</div>`;
+}
+
+function renderChart() {
+  const runs = [...test.runs].reverse();
+  const max = Math.max(...runs.map(r => r.duration_s || (r.status !== "completed" ? Math.round((Date.now() - new Date(r.started_at)) / 1000) : 0)), 1);
+  document.getElementById("bars").innerHTML = runs.map(r => {
+    const d = r.duration_s ?? (r.status !== "completed" ? Math.round((Date.now() - new Date(r.started_at)) / 1000) : 0);
+    return `<a class="${cls(runState(r))}${r.scope === "github" ? " gh" : ""}" style="height:${Math.max(2, 100 * d / max)}%" href="${esc(r.url)}"
+      title="${esc(fmtDate(r.started_at))} · ${esc(r.event)} · ${esc(label(runState(r)))} · ${fmtDur(r.duration_s)}"></a>`;
+  }).join("") + `<span class="ymax">${fmtDur(max)}</span>`;
+  document.getElementById("axis").innerHTML = runs.length
+    ? `<span>${fmtDate(runs[0].started_at)}</span><span>${fmtDate(runs.at(-1).started_at)}</span>` : "";
+}
+
+function trigger(r) {
+  const pr = r.prs?.length ? r.prs.map(n => `<a href="${esc(test.links.repo)}/pull/${n}">#${n}</a>`).join(" ") + " · " : "";
+  return `${esc(r.event)}${r.attempt > 1 ? ` <span class="muted">(attempt ${r.attempt})</span>` : ""}
+    <div class="sub">${pr}<a class="mono" href="${esc(test.links.repo)}/commit/${esc(r.sha)}">${esc(r.branch)}@${esc(r.sha.slice(0, 7))}</a>${r.actor ? " · " + esc(r.actor) : ""}</div>`;
+}
+
+function statusCell(r) {
+  const st = runState(r);
+  let sub = "";
+  if (r.current) sub = `<div class="sub">${esc(r.current.job)}${r.current.step ? " · " + esc(r.current.step) : ""}</div>`;
+  if (st === "waiting" || st === "action_required") sub = `<div class="sub"><a href="${esc(r.url)}">Approve run ↗</a></div>`;
+  const dur = r.status !== "completed" ? ` for ${since(r.started_at)}` : "";
+  return `<a class="pill ${cls(st)}" href="${esc(r.url)}">${esc(label(st))}${dur}</a>${sub}${r.stages ? stagesBar(r.stages) : `<div class="sub">details pending</div>`}`;
+}
+
+function renderRuns() {
+  document.getElementById("seg").innerHTML = FILTERS.map(([k, l]) =>
+    `<button data-f="${k}" aria-pressed="${runFilter === k}">${l}</button>`).join("");
+  document.querySelectorAll("#seg button").forEach(b => b.onclick = () => { runFilter = b.dataset.f; renderRuns(); });
+  const runs = test.runs.filter(keepRun[runFilter]);
+  document.getElementById("runcount").textContent = `${runs.length} of ${test.runs.length}`;
+  document.getElementById("runs").innerHTML = runs.length ? runs.map(r => `<tr>
+    <td class="num"><a class="mono" href="${esc(r.url)}">${r.id}</a></td>
+    <td title="${esc(fullDate(r.started_at))}">${fmtDate(r.started_at)}<div class="sub">${ago(r.started_at)}</div></td>
+    <td>${trigger(r)}</td>
+    <td>${r.scope ? `<span class="${r.scope === "github" ? "muted" : ""}">${scopeLabel(r.scope)}</span>` : "—"}</td>
+    <td>${statusCell(r)}</td>
+    <td class="mono">${fmtDur(r.duration_s)}</td>
+    <td>${r.geant4 ? `<span class="mono">${esc(r.geant4)}</span>` : "—"}</td>
+    <td>${r.published ? `<a href="${esc(r.published.commit_url)}">${ago(r.published.date)} ↗</a>`
+        : r.publish && !["not_run", "skipped"].includes(r.publish) ? `<span class="pill ${cls(r.publish)}">${esc(label(r.publish))}</span>` : `<span class="muted">—</span>`}</td>
+  </tr>`).join("") : `<tr><td colspan="8" class="empty">No runs</td></tr>`;
+}
+
+function renderPubs() {
+  const pubs = test.publications;
+  document.getElementById("pubnote").textContent = pubs.length ? `${pubs.length} in total` : "";
+  document.getElementById("pubs").innerHTML = pubs.length ? pubs.map(p => `<tr>
+    <td title="${esc(fullDate(p.date))}">${fmtDate(p.date)} <span class="sub">· ${ago(p.date)}</span></td>
+    <td>${p.sha ? `<a class="mono" href="${esc(test.links.repo)}/commit/${esc(p.sha)}">${esc(p.sha.slice(0, 7))}</a>` : "—"}</td>
+    <td class="mono">${esc(p.geant4_version || "—")}</td>
+    <td><a class="mono" href="${esc(p.commit_url)}">${esc(p.commit.slice(0, 7))}</a> <span class="sub">${esc(p.subject)}</span></td>
+  </tr>`).join("") : `<tr><td colspan="4" class="empty">Nothing published yet</td></tr>`;
+}
+
+function renderHeader() {
+  document.title = `${test.name} · G4Med`;
+  document.getElementById("title").innerHTML = `${esc(test.name)} <span>· runs</span>`;
+  document.getElementById("desc").textContent = test.description || "";
+  const L = test.links;
+  document.getElementById("links").innerHTML = [
+    [L.repo, "Repository"], [L.actions, "Actions"], [L.pulls, "Pull requests"], [L.results, "Output folder"],
+  ].map(([u, l]) => u ? `<a class="btn" href="${esc(u)}" target="_blank" rel="noopener">${l} ↗</a>`
+                      : `<span class="btn disabled">${l}: none yet</span>`).join("");
+
+  const full = test.runs.filter(r => r.scope === "full" && r.status === "completed");
+  const passed = full.filter(r => r.conclusion === "success");
+  const versions = [...new Set(test.runs.map(r => r.geant4).filter(Boolean))];
+  const lastPub = test.publications[0];
+  const k = [
+    [test.runs.length, "Runs shown"],
+    [full.length ? `${Math.round(100 * passed.length / full.length)}%` : "—", `Full pipelines passed (${passed.length}/${full.length})`],
+    [fmtDur(median(passed.map(r => r.duration_s).filter(Boolean))), "Median duration (passed)"],
+    [lastPub ? ago(lastPub.date) : "—", lastPub ? `Last published · Geant4 ${lastPub.geant4_version || "?"}` : "Never published"],
+    [test.prs.filter(p => p.state === "awaiting_approval").length, "PRs awaiting approval", "attn"],
+    [versions.length ? versions.slice(0, 3).join(", ") : "—", "Geant4 versions in these runs"],
+  ];
+  document.getElementById("kpis").innerHTML = k.map(([v, l, c]) =>
+    `<div class="kpi"><b class="${c && v ? c : ""}" style="${String(v).length > 12 ? "font-size:15px" : ""}">${esc(v)}</b><small>${esc(l)}</small></div>`).join("");
+}
+
+async function load() {
+  if (!name) { document.getElementById("title").textContent = "No test selected"; return; }
+  try {
+    [test, overview] = await Promise.all([getJSON(`tests/${encodeURIComponent(name)}.json`), getJSON("data.json")]);
+  } catch (e) {
+    document.getElementById("title").textContent = `Test “${name}” not found`;
+    return;
+  }
+  setUpdated(document.getElementById("updated"), overview.generated_at);
+  renderHeader(); renderPRs(); renderChart(); renderRuns(); renderPubs();
+}
+load();
+setInterval(load, 60000);
+</script>
+</body>
+</html>

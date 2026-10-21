@@ -1,0 +1,20 @@
+diff --git a/.github/workflows/apptainer-build-deploy.yml b/.github/workflows/apptainer-build-deploy.yml
+index 89515e7..a4c135d 100644
+--- a/.github/workflows/apptainer-build-deploy.yml
++++ b/.github/workflows/apptainer-build-deploy.yml
+@@ -75,6 +75,15 @@ jobs:
+           built="$(sudo apptainer exec --unsquash simulation.sif uname -m)"
+           test "$built" = "${{ matrix.host_arch }}"
+ 
++      # Read by the dashboard (G4Med-test/dashboard) through the check-run
++      # annotations API: the title must stay "Geant4 <version>".
++      - name: Report Geant4 version
++        if: matrix.arch == 'amd64'
++        run: |
++          v="$(sudo apptainer exec --unsquash simulation.sif geant4-config --version)"
++          echo "::notice title=Geant4 ${v}::Image built with Geant4 ${v}"
++          echo "Geant4 \`${v}\`" >> "$GITHUB_STEP_SUMMARY"
++
+       # <commit SHA>, or <commit SHA>-<geant4 tag> when a Geant4 version is requested,
+       # so builds of the same commit with different Geant4 versions do not collide.
+       - name: Push Container to GHCR
