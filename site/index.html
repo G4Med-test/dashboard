@@ -15,7 +15,7 @@
     <div class="updated" id="updated">Loading…</div>
   </div>
   <div class="hside">
-    <div class="updated"><a id="orglink" href="#">Organization</a> · <a id="reslink" href="#">validation-results</a></div>
+    <div class="updated"><a id="orglink" href="#">Organization</a> · <a id="reslink" href="#">validation-results</a> · <a id="readmelink" href="#">README</a></div>
     <div id="refresh"></div>
   </div>
 </header>
@@ -142,6 +142,7 @@ function render() {
   setUpdated(document.getElementById("updated"), data.generated_at);
   document.getElementById("orglink").href = `https://github.com/${data.org}`;
   document.getElementById("reslink").href = data.results_repo;
+  document.getElementById("readmelink").href = readmeUrl(data);
   const notes = [];
   if (data.orphan_results.length) notes.push(`Results in validation-results with no test repository: ${data.orphan_results.join(", ")}.`);
   if (data.undetailed_runs) notes.push(`${data.undetailed_runs} older runs are still being indexed.`);

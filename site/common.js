@@ -115,12 +115,13 @@ async function ghApi(path, init = {}) {
   return r.status === 204 ? null : r.json();
 }
 
+const readmeUrl = (data, anchor = "readme") => `https://github.com/${data.dashboard_repo || `${data.org}/dashboard`}#${anchor}`;
 const stepSeconds = s => s.started_at && s.completed_at ? (new Date(s.completed_at) - new Date(s.started_at)) / 1000 : null;
 
 function initRefresh(box, onUpdated) {
   box.className = "refresh";
   box.innerHTML = `<div class="row">
-      <button type="button" class="linkbtn" data-a="token"></button>
+      <button type="button" class="iconbtn" data-a="token">⚙</button>
       <button type="button" class="btn" data-a="run" disabled>↻ Update now</button>
     </div>
     <div class="progress" hidden>
@@ -131,7 +132,8 @@ function initRefresh(box, onUpdated) {
       <h3>Start updates from this page</h3>
       <p>Paste a <a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noopener">fine-grained token</a>
         with the dashboard's organization as resource owner, access to the <b>dashboard</b> repository only and
-        <b>Actions: Read and write</b>. It stays in this browser and is sent only to api.github.com.</p>
+        <b>Actions: Read and write</b>. It stays in this browser and is sent only to api.github.com.
+        <a data-a="readme" href="#" target="_blank" rel="noopener">Step by step in the README ↗</a></p>
       <input type="password" name="t" placeholder="github_pat_…" autocomplete="off" spellcheck="false">
       <div class="row"><button class="btn" value="remove">Remove</button><span></span>
         <button class="btn" value="cancel">Cancel</button><button class="btn primary" value="save">Save</button></div>
@@ -255,8 +257,10 @@ function initRefresh(box, onUpdated) {
     runBtn.textContent = busy ? "Updating…" : "↻ Update now";
     runBtn.title = token ? "Start the dashboard update now"
       : "Opens the workflow on GitHub: click “Run workflow” there (needs write access to the repository)";
-    tokBtn.textContent = token ? "Token ✓" : "Use a token";
-    tokBtn.title = token ? "Change or remove the token used to start updates" : "Start updates with one click, without going to GitHub";
+    tokBtn.classList.toggle("on", !!token);
+    tokBtn.title = token ? "A GitHub token is saved in this browser: “Update now” starts the update directly. Click to change or remove it."
+      : "Without a token, “Update now” opens GitHub, where you start the workflow by hand. Click to save a GitHub token in this browser and start updates with one click.";
+    tokBtn.setAttribute("aria-label", token ? "GitHub token saved: change or remove" : "Save a GitHub token for one-click updates");
 
     let frac = null, css = "", html = "";
     const log = r => r ? ` · <a href="${esc(r.html_url)}" target="_blank" rel="noopener">log ↗</a>` : "";
@@ -284,7 +288,7 @@ function initRefresh(box, onUpdated) {
   }
 
   runBtn.onclick = start;
-  tokBtn.onclick = () => { input.value = ""; dlg.querySelector('[value="remove"]').hidden = !local.get(TOKEN_KEY); dlg.showModal(); };
+  tokBtn.onclick = () => { input.value = ""; dlg.querySelector('[value="remove"]').hidden = !local.get(TOKEN_KEY); dlg.showModal(); input.focus(); };
   dlg.onclose = () => {
     if (dlg.returnValue === "save" && input.value.trim()) local.set(TOKEN_KEY, input.value.trim());
     if (dlg.returnValue === "remove") local.set(TOKEN_KEY, null);
@@ -300,6 +304,7 @@ function initRefresh(box, onUpdated) {
   getJSON("data.json").then(d => {
     repo = d.dashboard_repo || `${d.org}/dashboard`;
     generated = d.generated_at;
+    box.querySelector('[data-a="readme"]').href = readmeUrl(d, "token-for-one-click-updates");
     poll();
   }).catch(() => { box.hidden = true; });
 }

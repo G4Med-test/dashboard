@@ -84,10 +84,8 @@ the cron:
 
 - **Without a token** it opens *Actions → Update dashboard* on GitHub, where anyone with
   write access to this repository clicks *Run workflow*.
-- **With a token** (*Use a token*) it starts the run itself. Fine-grained token, resource
-  owner `G4Med-test`, only the `dashboard` repository, *Actions: Read and write*. It is kept
-  in the browser's `localStorage`, which every Pages site of the organization can read
-  (they share `g4med-test.github.io`): give it nothing more than that permission.
+- **With a token** saved in the browser (⚙ next to the button) it starts the run itself,
+  in one click. See below.
 
 Every run of the workflow, scheduled or manual, shows a progress bar with the current step
 and the time left, estimated from the step durations of the last passed run. When the run
@@ -95,6 +93,28 @@ passes, the page waits for the new `data.json` and reloads the data. Without a t
 page uses GitHub's unauthenticated API, 60 calls per hour shared by everyone behind the same
 IP address: it checks for runs every 5 minutes and follows one every 15 s (with a token, 30 s
 and 4 s). If the limit is reached the page says so and resumes when it resets.
+
+### Token for one-click updates
+
+Needed only to start updates from the page; anyone can watch the progress without one. You
+need write access to `G4Med-test/dashboard` (or to ask an organization owner to approve the
+token, if the organization requires it).
+
+1. Open <https://github.com/settings/personal-access-tokens/new> (*Settings → Developer
+   settings → Personal access tokens → Fine-grained tokens → Generate new token*).
+2. *Token name*: e.g. `dashboard update`. *Expiration*: your choice (when it expires the
+   page says the token was rejected: create a new one).
+3. *Resource owner*: **`G4Med-test`**.
+4. *Repository access*: **Only select repositories → `dashboard`**.
+5. *Permissions → Repository permissions → Actions*: **Read and write** (*Metadata: Read*
+   is added automatically). Nothing else.
+6. *Generate token*, copy it (`github_pat_…`).
+7. On the dashboard click **⚙**, paste it, **Save**. The icon turns green; ⚙ again to change
+   or remove it.
+
+The token is kept only in that browser's `localStorage` and sent only to `api.github.com`.
+Every Pages site of the organization can read that storage (they all live on
+`g4med-test.github.io`), so give the token that single permission and nothing more.
 
 ## Notes
 

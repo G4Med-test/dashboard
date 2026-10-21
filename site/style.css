@@ -114,8 +114,9 @@ footer { max-width: 1320px; margin: 0 auto; padding: 0 16px 32px; font-size: 12p
 .refresh .row { display: flex; align-items: center; gap: 10px; }
 button.btn { font-family: inherit; cursor: pointer; }
 button.btn:disabled { color: var(--muted); border-color: var(--line); cursor: default; }
-.linkbtn { border: 0; background: none; padding: 0; color: var(--accent); font: inherit; font-size: 12.5px; cursor: pointer; }
-.linkbtn:hover { text-decoration: underline; }
+.iconbtn { border: 0; background: none; padding: 2px 4px; color: var(--muted); font-size: 17px; line-height: 1; cursor: pointer; border-radius: 6px; }
+.iconbtn:hover { color: var(--ink); background: var(--hover); }
+.iconbtn.on { color: var(--ok); }
 .progress { width: 300px; max-width: 100%; }
 .progress .sub { text-align: right; margin-top: 4px; }
 .bar { height: 6px; border-radius: 3px; background: var(--idle-bg); overflow: hidden; }
@@ -134,3 +135,4 @@ dialog.tok input { width: 100%; padding: 7px 9px; border: 1px solid var(--line);
   font: 12.5px "IBM Plex Mono", ui-monospace, monospace; }
 dialog.tok .row { display: flex; gap: 8px; margin-top: 14px; }
 dialog.tok .row span { flex: 1; }
+dialog.tok [hidden] { display: none; }
