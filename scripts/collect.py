@@ -4,12 +4,15 @@
 Writes:
   <OUTPUT_DIR>/data.json          overview of every test (index page)
   <OUTPUT_DIR>/tests/<name>.json  every run, open pull request and publication of one test
+  <OUTPUT_DIR>/geant4.json        Geant4 tags, their base images and release validations
 
 Sources:
   - GitHub REST API: the org's repositories, each test's ci.yml runs and jobs, open pull
     requests, pending deployments, and the build-job annotation with the Geant4 version;
+    the runs of ci-workflows' geant4-release.yml and geant4-alma9's build.yml;
   - a local clone of G4Med-test/validation-results (full history): when each test's
-    results were published, from which commit and with which Geant4 version.
+    results were published, from which commit and with which Geant4 version;
+  - the tags of github.com/Geant4/geant4 (git ls-remote) and of the base image on GHCR.
 
 Details of completed runs never change, so they are kept in CACHE_FILE between updates
 and only new runs cost API calls (at most MAX_DETAIL_FETCHES per update).
@@ -319,6 +322,112 @@ def read_publications():
     return out, remote
 
 
+# ------------------------------------------------------------- Geant4 versions
+
+GEANT4_UPSTREAM = "https://github.com/Geant4/geant4.git"
+BASE_IMAGE = f"{ORG.lower()}/geant4-alma9"
+RELEASE_REPO, RELEASE_WORKFLOW = f"{ORG}/ci-workflows", "geant4-release.yml"
+BASE_REPO, BASE_WORKFLOW = f"{ORG}/geant4-alma9", "build.yml"
+# The tags geant4-alma9 can build and geant4-release.yml accepts.
+GEANT4_TAG = re.compile(r"v(\d+)\.(\d+)\.(\d+)([.-][A-Za-z0-9][A-Za-z0-9.-]*)?\Z")
+RELEASE_RUN = re.compile(r"^Validate Geant4 (\S+)$")  # run-name of geant4-release.yml
+
+
+def upstream_geant4_tags():
+    """Buildable Geant4 tags, newest first (a beta before its release)."""
+    out = subprocess.run(["git", "ls-remote", "--tags", "--refs", GEANT4_UPSTREAM],
+                         capture_output=True, text=True, timeout=120, check=True).stdout
+    tags = [line.split("refs/tags/", 1)[1] for line in out.splitlines() if "refs/tags/" in line]
+    def key(tag):
+        m = GEANT4_TAG.match(tag)
+        return (int(m[1]), int(m[2]), int(m[3]), not m[4], m[4] or "")
+    return sorted((t for t in tags if GEANT4_TAG.match(t)), key=key, reverse=True)
+
+
+def base_image_tags():
+    """Tags of ghcr.io/<org>/geant4-alma9, read anonymously like the test builds do."""
+    with urllib.request.urlopen(f"https://ghcr.io/token?scope=repository:{BASE_IMAGE}:pull", timeout=30) as resp:
+        token = json.load(resp)["token"]
+    tags, url = set(), f"https://ghcr.io/v2/{BASE_IMAGE}/tags/list?n=1000"
+    while url:
+        req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            tags.update(json.load(resp).get("tags") or [])
+            m = re.search(r'<([^>]+)>;\s*rel="next"', resp.headers.get("Link", ""))
+        url = urllib.parse.urljoin("https://ghcr.io", m[1]) if m else None
+    return tags
+
+
+def release_runs(cache, used_keys):
+    """Recent runs of geant4-release.yml: tag, and whether they started the tests or a base build."""
+    data = api(f"/repos/{RELEASE_REPO}/actions/workflows/{RELEASE_WORKFLOW}/runs", {"per_page": 20}) or {}
+    out = []
+    for r in data.get("workflow_runs", []):
+        m = RELEASE_RUN.match(r.get("display_title") or "")
+        rec = {"id": r["id"], "url": r["html_url"], "tag": m[1] if m else None,
+               "status": r["status"], "conclusion": r["conclusion"], "event": r["event"],
+               "actor": (r.get("triggering_actor") or r.get("actor") or {}).get("login"),
+               "started_at": r["run_started_at"]}
+        key = f"{RELEASE_REPO}/{r['id']}/{r['run_attempt']}"
+        used_keys.add(key)
+        if key in cache:
+            rec.update(cache[key])
+        else:
+            jobs = api_pages(f"/repos/{RELEASE_REPO}/actions/runs/{r['id']}/jobs", key="jobs")
+            started = [j for j in jobs if j["name"] not in ("list-tests", "build-base-image")]
+            base = next((j for j in jobs if j["name"] == "build-base-image"), None)
+            rec["tests_started"] = sum(j["conclusion"] == "success" for j in started)
+            rec["tests_failed"] = sum(j["conclusion"] in BAD for j in started)
+            rec["base_build"] = base["conclusion"] if base and base["conclusion"] != "skipped" else None
+            if r["status"] == "completed":
+                cache[key] = {k: rec[k] for k in ("tests_started", "tests_failed", "base_build")}
+        out.append(rec)
+    return out
+
+
+def base_builds():
+    """Base-image builds still running (their tag is known only from the run page)."""
+    data = api(f"/repos/{BASE_REPO}/actions/workflows/{BASE_WORKFLOW}/runs", {"per_page": 10}) or {}
+    return [{"url": r["html_url"], "status": r["status"], "event": r["event"], "started_at": r["run_started_at"]}
+            for r in data.get("workflow_runs", []) if r["status"] != "completed" and r["event"] != "pull_request"]
+
+
+def geant4_versions(details, cache, used_keys):
+    """geant4.json: what the Geant4 versions page offers and shows."""
+    out = {"upstream": GEANT4_UPSTREAM.removesuffix(".git"), "image": f"ghcr.io/{BASE_IMAGE}",
+           "release_repo": RELEASE_REPO, "release_workflow": RELEASE_WORKFLOW,
+           "base_repo": BASE_REPO, "base_workflow": BASE_WORKFLOW, "errors": []}
+    try:
+        tags = upstream_geant4_tags()
+    except (OSError, subprocess.SubprocessError) as err:
+        tags = []
+        out["errors"].append(f"Geant4 tags unavailable: {err}")
+    try:
+        images = base_image_tags()
+    except (OSError, ValueError, KeyError) as err:
+        images = None
+        out["errors"].append(f"Base image tags unavailable: {err}")
+    # published is None when GHCR could not be read: the page then says it is unknown.
+    out["tags"] = [{"tag": t, "published": None if images is None else t in images} for t in tags]
+    try:
+        out["runs"], out["base_builds"] = release_runs(cache, used_keys), base_builds()
+    except OSError as err:  # including HTTP errors
+        out["runs"], out["base_builds"] = [], []
+        out["errors"].append(f"Workflow runs unavailable: {err}")
+
+    # Latest full-pipeline run of each test with each Geant4 version (geant4-config --version).
+    by_version = {}
+    for d in details:
+        for r in d["runs"]:  # newest first
+            if r.get("geant4") and r.get("scope") == "full":
+                by_version.setdefault(r["geant4"], {}).setdefault(d["name"], {
+                    k: r.get(k) for k in ("url", "status", "conclusion", "started_at", "event")})
+    out["tested"] = by_version
+    for err in out["errors"]:
+        print(f"warning: {err}", file=sys.stderr)
+    return out
+
+
 # ------------------------------------------------------------------------ tests
 
 def collect_test(repo, publications, cache, used_keys):
@@ -378,12 +487,14 @@ def main():
         except ValueError:
             pass
     publications, results_url = read_publications()
-    used_keys, summaries = set(), []
+    used_keys, summaries, details = set(), [], []
     (OUTPUT_DIR / "tests").mkdir(parents=True, exist_ok=True)
     for repo in discover_tests():
         summary, detail = collect_test(repo, publications, cache, used_keys)
         summaries.append(summary)
+        details.append(detail)
         (OUTPUT_DIR / "tests" / f"{repo['name']}.json").write_text(json.dumps(detail, indent=1) + "\n")
+    geant4 = geant4_versions(details, cache, used_keys)
 
     data = {
         "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
@@ -397,6 +508,7 @@ def main():
         "api_calls": calls,
     }
     (OUTPUT_DIR / "data.json").write_text(json.dumps(data, indent=1) + "\n")
+    (OUTPUT_DIR / "geant4.json").write_text(json.dumps({"generated_at": data["generated_at"], **geant4}, indent=1) + "\n")
     CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
     CACHE_FILE.write_text(json.dumps({k: v for k, v in cache.items() if k in used_keys}))
     print(f"{len(summaries)} tests, {calls} API calls, {MAX_DETAIL_FETCHES - detail_budget} runs detailed")

@@ -1,0 +1,269 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Geant4 versions</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+<style>
+.launch { padding: 16px; display: grid; gap: 14px; }
+.launch > * { min-width: 0; }  /* let code.cmd scroll instead of widening the panel */
+.launch ol code { overflow-wrap: anywhere; }
+.launch .row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; }
+.launch label { font-weight: 500; }
+select { font: 13px "IBM Plex Mono", ui-monospace, monospace; padding: 5px 8px; border: 1px solid var(--line); border-radius: 6px;
+  background: var(--bg); color: var(--ink); min-width: 220px; max-width: 100%; }
+.launch ol { margin: 0; padding-left: 20px; color: var(--muted); }
+.launch ol b, .launch ol code { color: var(--ink); }
+.access { font-size: 13px; color: var(--muted); border-top: 1px solid var(--line); padding-top: 12px; }
+.access .warn { font-size: 13px; }
+code.cmd { display: block; margin-top: 6px; padding: 7px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg);
+  color: var(--ink); overflow-x: auto; white-space: pre; }
+.banner { background: var(--run-bg); color: var(--run); border-radius: 8px; padding: 8px 12px; margin-bottom: 12px; font-size: 13px; }
+.banner.bad { background: var(--bad-bg); color: var(--bad); }
+dialog.tok ul { margin: 0 0 12px; padding-left: 18px; color: var(--muted); font-size: 13px; }
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <a class="crumb" href="./">← All tests</a>
+    <h1>G4Med <span>· Geant4 versions</span></h1>
+    <div class="updated" id="updated">Loading…</div>
+  </div>
+  <div class="hside">
+    <div class="links" id="links"></div>
+    <div id="refresh"></div>
+  </div>
+</header>
+<main>
+  <div id="banners"></div>
+
+  <h2>Validate a Geant4 version <small>runs the full pipeline of every test with one tag of Geant4/geant4</small></h2>
+  <div class="panel launch">
+    <div class="row">
+      <label for="tag">Geant4 tag</label>
+      <select id="tag" disabled><option value="">Loading…</option></select>
+      <span id="state"></span>
+    </div>
+    <ol id="plan"></ol>
+    <div class="row">
+      <button type="button" class="btn primary" id="go" disabled>Run all tests</button>
+      <span class="sub" id="note" aria-live="polite"></span>
+    </div>
+    <div class="access" id="access"></div>
+  </div>
+
+  <h2 id="testedTitle">Tests with this version <small>latest full pipeline of each test</small></h2>
+  <div class="panel">
+    <table>
+      <thead><tr><th>Test</th><th>Result</th><th>Started</th></tr></thead>
+      <tbody id="tested"><tr><td colspan="3" class="empty">Loading…</td></tr></tbody>
+    </table>
+  </div>
+
+  <h2>Recent validations <small>runs of <span id="wfname" class="mono">geant4-release.yml</span></small></h2>
+  <div class="panel">
+    <table>
+      <thead><tr><th>Version</th><th>Started</th><th>By</th><th>Outcome</th></tr></thead>
+      <tbody id="runs"><tr><td colspan="4" class="empty">Loading…</td></tr></tbody>
+    </table>
+  </div>
+</main>
+<footer id="foot"></footer>
+
+<dialog class="tok" id="confirm"><form method="dialog">
+  <h3></h3>
+  <ul></ul>
+  <div class="row"><span></span><button class="btn" value="cancel">Cancel</button><button class="btn primary" value="ok">Start</button></div>
+</form></dialog>
+
+<script src="common.js"></script>
+<script>
+// Starts ci-workflows' geant4-release.yml (see the README, "Geant4 versions"): with the
+// base image published it starts every test; otherwise it builds the image first.
+let g4 = null, overview = null, perm = null, launch = null;
+const sel = document.getElementById("tag"), goBtn = document.getElementById("go");
+const version = tag => tag.replace(/^v/, "");  // tag → geant4-config --version
+const current = () => g4?.tags.find(t => t.tag === sel.value);
+const GEANT4_RELEASE = /^v\d+\.\d+\.\d+$/;
+
+function fillSelect() {
+  const want = sel.value || new URLSearchParams(location.search).get("v");
+  const groups = {};
+  for (const t of g4.tags) (groups[t.tag.split(".")[0].slice(1)] ??= []).push(t);
+  const mark = t => t.published ? " · image ready" : t.published === false ? " · image to build" : "";
+  sel.innerHTML = Object.entries(groups).sort((a, b) => b[0] - a[0]).map(([major, ts]) =>
+    `<optgroup label="Geant4 ${esc(major)}">${ts.map(t => `<option value="${esc(t.tag)}">${esc(t.tag + mark(t))}</option>`).join("")}</optgroup>`).join("");
+  // Default: the newest release, betas excluded.
+  sel.value = g4.tags.some(t => t.tag === want) ? want : (g4.tags.find(t => GEANT4_RELEASE.test(t.tag)) || g4.tags[0])?.tag || "";
+  sel.disabled = !g4.tags.length;
+}
+
+function renderLaunch() {
+  const t = current(), n = overview?.tests.length ?? 0;
+  const tested = t ? Object.values(g4.tested[version(t.tag)] || {}) : [];
+  const passed = tested.filter(r => r.conclusion === "success").length;
+  document.getElementById("state").innerHTML = !t ? "" :
+    (t.published ? `<span class="pill ok">Base image published</span>`
+      : t.published === false ? `<span class="pill gate">Base image not built yet</span>`
+      : `<span class="pill idle">Base image: unknown</span>`) +
+    ` <span class="sub">${tested.length ? `${tested.length} of ${n} tests already run with it, ${passed} passed` : "no test run with it yet"}</span>`;
+
+  const image = t ? `<code>${esc(g4.image)}:${esc(t.tag)}</code>` : "";
+  document.getElementById("plan").innerHTML = !t ? "" : [
+    ...(t.published ? [] : [`${t.published === false ? "Builds" : "If missing, builds"} the base image ${image} (amd64 and arm64). This takes a while; nothing else starts if it fails.`]),
+    `Starts <b>${n} test pipelines</b> with ${esc(t.tag)}: build, unit tests, then validation on the Padova runner.`,
+    `Results are published to <a href="${esc(overview?.results_repo || "#")}">validation-results</a> as usual; follow them on the <a href="./">overview</a>.`,
+  ].map(s => `<li>${s}</li>`).join("");
+
+  const token = local.get(TOKEN_KEY), busy = launch && !launch.done;
+  goBtn.disabled = !t || busy || (token && perm === false);
+  goBtn.textContent = !t ? "Run all tests" : token ? `Run all ${n} tests with ${t.tag}` : "Open on GitHub ↗";
+
+  const repo = g4.release_repo, cmd = t ? `gh workflow run ${g4.release_workflow} -R ${repo} -f geant4_tag=${t.tag}` : "";
+  const wf = `https://github.com/${repo}/actions/workflows/${g4.release_workflow}`;
+  document.getElementById("access").innerHTML = !token
+    ? `Only maintainers of <a href="https://github.com/${esc(repo)}">${esc(repo)}</a> (write access) can start a validation.
+       Save a token with <b>Actions: Read and write</b> on <span class="mono">ci-workflows</span> (⚙ at the top) to start it from here,
+       or open <a href="${esc(wf)}">the workflow</a> and use <i>Run workflow</i> with the tag, or run:<code class="cmd">${esc(cmd)}</code>`
+    : perm === false ? `<span class="warn">Your GitHub account has no write access to ${esc(repo)}: ask one of its maintainers to start the validation.</span>`
+    : `Starts <a href="${esc(wf)}">${esc(g4.release_workflow)}</a> in ${esc(repo)} with the token saved in this browser.`;
+}
+
+function outcome(r) {
+  if (r.status !== "completed") return `<a class="pill run" href="${esc(r.url)}">${esc(label(r.status))}</a>`;
+  if (r.base_build === "success") return `<a class="pill gate" href="${esc(r.url)}">Base image build started</a><div class="sub">tests start when it is published</div>`;
+  if (r.tests_started || r.tests_failed) return `<a class="pill ${r.tests_failed ? "bad" : "ok"}" href="${esc(r.url)}">${r.tests_started} pipeline${r.tests_started === 1 ? "" : "s"} started</a>` +
+    (r.tests_failed ? `<div class="sub">${r.tests_failed} could not be started</div>` : "");
+  return `<a class="pill ${cls(r.conclusion)}" href="${esc(r.url)}">${esc(label(r.conclusion))}</a>`;
+}
+
+function render() {
+  fillSelect();
+  renderLaunch();
+  const t = current(), tested = t ? g4.tested[version(t.tag)] || {} : {};
+  document.getElementById("testedTitle").firstChild.textContent = `Tests with ${t?.tag || "this version"} `;
+  document.getElementById("tested").innerHTML = (overview?.tests || []).map(x => {
+    const r = tested[x.name];
+    return `<tr><td class="name"><a class="t" href="test.html?t=${encodeURIComponent(x.name)}">${esc(x.name)}</a></td>
+      <td>${r ? `<a class="pill ${cls(runState(r))}" href="${esc(r.url)}">${esc(label(runState(r)))}</a>` : `<span class="pill idle">Not run</span>`}</td>
+      <td>${r ? `<span title="${esc(fullDate(r.started_at))}">${ago(r.started_at)}</span> <span class="sub">· ${esc(r.event)}</span>` : "—"}</td></tr>`;
+  }).join("") || `<tr><td colspan="3" class="empty">No tests</td></tr>`;
+
+  document.getElementById("runs").innerHTML = g4.runs.map(r => `<tr>
+      <td>${r.tag ? `<a class="mono" href="?v=${encodeURIComponent(r.tag)}" data-v="${esc(r.tag)}">${esc(r.tag)}</a>` : "—"}</td>
+      <td><span title="${esc(fullDate(r.started_at))}">${ago(r.started_at)}</span></td>
+      <td>${esc(r.actor || "—")}<div class="sub">${esc(r.event)}</div></td><td>${outcome(r)}</td></tr>`).join("")
+    || `<tr><td colspan="4" class="empty">No validation started yet</td></tr>`;
+  document.querySelectorAll("#runs a[data-v]").forEach(a => a.onclick = e => { e.preventDefault(); select(a.dataset.v); scrollTo({top: 0}); });
+
+  document.getElementById("banners").innerHTML =
+    g4.base_builds.map(b => `<div class="banner">A base image build is ${esc(label(b.status).toLowerCase())} since ${since(b.started_at)} · <a href="${esc(b.url)}">follow it ↗</a></div>`).join("") +
+    g4.errors.map(e => `<div class="banner bad">${esc(e)}</div>`).join("");
+  document.getElementById("links").innerHTML = [
+    [`${g4.upstream}/tags`, "Geant4 tags"], [`https://github.com/${g4.base_repo}/actions/workflows/${g4.base_workflow}`, "Base image builds"],
+    [`https://github.com/${g4.release_repo}/actions/workflows/${g4.release_workflow}`, "Validations"]]
+    .map(([u, l]) => `<a class="btn" href="${esc(u)}">${esc(l)} ↗</a>`).join("");
+  document.getElementById("wfname").textContent = g4.release_workflow;
+  setUpdated(document.getElementById("updated"), g4.generated_at);
+}
+
+function select(tag) {
+  sel.value = tag;
+  history.replaceState(null, "", `?v=${encodeURIComponent(tag)}`);
+  render();
+}
+sel.onchange = () => select(sel.value);
+
+// Whether the token's account can start workflows in ci-workflows (write access).
+async function checkPermission() {
+  perm = null;
+  if (local.get(TOKEN_KEY) && g4) {
+    try {
+      const p = (await ghApi(`/repos/${g4.release_repo}`)).permissions;
+      perm = p ? !!(p.push || p.maintain || p.admin) : null;
+    } catch {}  // unknown: the dispatch itself reports a missing permission
+  }
+  if (g4) renderLaunch();
+}
+
+// ------------------------------------------------------------------ start and follow
+const note = html => document.getElementById("note").innerHTML = html;
+
+goBtn.onclick = () => {
+  const t = current();
+  if (!t) return;
+  if (!local.get(TOKEN_KEY)) {
+    window.open(`https://github.com/${g4.release_repo}/actions/workflows/${g4.release_workflow}`, "_blank", "noopener");
+    return;
+  }
+  const dlg = document.getElementById("confirm");
+  dlg.querySelector("h3").textContent = `Run every test with Geant4 ${t.tag}?`;
+  dlg.querySelector("ul").innerHTML = document.getElementById("plan").innerHTML;
+  dlg.onclose = () => dlg.returnValue === "ok" && start(t.tag);
+  dlg.returnValue = "";
+  dlg.showModal();
+};
+
+async function start(tag) {
+  const clicked = Date.now() - 15000;  // tolerate clock skew with GitHub
+  launch = {tag, done: false};
+  note("Starting…");
+  renderLaunch();
+  try {
+    await ghApi(`/repos/${g4.release_repo}/actions/workflows/${g4.release_workflow}/dispatches`, {method: "POST",
+      headers: {"Content-Type": "application/json"}, body: JSON.stringify({ref: "main", inputs: {geant4_tag: tag}})});
+  } catch (e) {
+    launch.done = true;
+    note(`<span class="warn">${e.status === 401 ? "The token was rejected: expired or revoked?"
+      : e.status === 403 || e.status === 404 ? `This token cannot start workflows in ${esc(g4.release_repo)}: give it <b>Actions: Read and write</b> on ci-workflows.`
+      : `Could not start the validation (${esc(e.message)}).`}</span>`);
+    renderLaunch();
+    return;
+  }
+  // Find the new run, then follow it until it has started the tests or the image build.
+  let run = null;
+  for (let i = 0; i < 40 && !launch.done; i++) {
+    await new Promise(r => setTimeout(r, run ? 5000 : 3000));
+    try {
+      if (!run) {
+        const {workflow_runs: runs} = await ghApi(`/repos/${g4.release_repo}/actions/workflows/${g4.release_workflow}/runs?event=workflow_dispatch&per_page=10`);
+        run = runs.find(r => r.display_title === `Validate Geant4 ${tag}` && new Date(r.created_at) >= clicked);
+        if (!run) { note("Started, waiting for the run to appear…"); continue; }
+      } else run = await ghApi(`/repos/${g4.release_repo}/actions/runs/${run.id}`);
+      const link = `<a href="${esc(run.html_url)}" target="_blank" rel="noopener">run ↗</a>`;
+      if (run.status !== "completed") { note(`${esc(label(run.status))} · ${link}`); continue; }
+      const {jobs} = await ghApi(`/repos/${g4.release_repo}/actions/runs/${run.id}/jobs`);
+      const base = jobs.find(j => j.name === "build-base-image");
+      const tests = jobs.filter(j => !["list-tests", "build-base-image"].includes(j.name) && j.conclusion === "success").length;
+      note(run.conclusion !== "success" ? `<span class="warn">The validation ${esc(label(run.conclusion).toLowerCase())}</span> · ${link}`
+        : base?.conclusion === "success" ? `Base image build started: the ${overview?.tests.length ?? ""} tests start once it is published · ${link}`
+        : `${tests} test pipelines started with ${esc(tag)} · ${link}`);
+      launch.done = true;
+    } catch (e) {
+      if (e.reset) { note("GitHub API limit reached: follow the run on GitHub."); launch.done = true; }
+    }
+  }
+  if (!launch.done) note(`Still running: follow it on <a href="https://github.com/${esc(g4.release_repo)}/actions/workflows/${esc(g4.release_workflow)}">GitHub ↗</a>`);
+  launch.done = true;
+  renderLaunch();
+}
+
+async function load() {
+  try {
+    [g4, overview] = await Promise.all([getJSON("geant4.json"), getJSON("data.json")]);
+    render();
+    if (perm === null) checkPermission();
+  } catch (e) { document.getElementById("updated").textContent = "Could not load geant4.json"; }
+}
+load();
+setInterval(load, 60000);
+initRefresh(document.getElementById("refresh"), load);
+// The token may change from the ⚙ dialog: check the access again.
+document.querySelector("#refresh dialog").addEventListener("close", () => setTimeout(checkPermission, 0));
+</script>
+</body>
+</html>

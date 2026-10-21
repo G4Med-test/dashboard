@@ -3,3 +3,4 @@ site/tests/
 cache/
 validation-results/
 __pycache__/
+site/geant4.json

@@ -2,7 +2,8 @@ name: Update dashboard
 
 on:
   schedule:
-    - cron: "*/10 * * * *"   # GitHub may delay scheduled runs by several minutes
+    # Off the hour: GitHub delays (or drops) scheduled runs most around :00.
+    - cron: "3-59/10 * * * *"
   workflow_dispatch:          # by hand, or from the test pipeline (see README)
   push:
     branches: [main]

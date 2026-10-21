@@ -11,14 +11,21 @@ Static GitHub Pages site showing every G4Med test that uses
   checks → Approval → Padova & validation* tracker and the button to approve or follow the
   run; duration chart; every run (filterable) with stage bar, scope, Geant4 version and
   publication; every publication to `validation-results`.
+- **Geant4 versions** (`geant4.html?v=<tag>`): every tag of
+  [Geant4/geant4](https://github.com/Geant4/geant4/tags) that the base image can be built
+  from, whether `ghcr.io/g4med-test/geant4-alma9:<tag>` is published, which tests already
+  ran the full pipeline with it, and recent validations. Maintainers start the validation
+  of a version from here (see [Validating a Geant4 version](#validating-a-geant4-version)).
 
 ## How it works
 
 ```text
 cron every 10 min ──► update.yml ──► scripts/collect.py ──► site/data.json + site/tests/<name>.json ──► Pages
+                                     │                       + site/geant4.json
                                      │                       site/*.html read the JSON (reload every 60 s)
                                      ├─ GitHub API (runs, jobs, PRs, pending deployments)
                                      ├─ clone of validation-results (publications + provenance.json)
+                                     ├─ git ls-remote of Geant4/geant4, tag list of the base image on GHCR
                                      └─ actions/cache with the details of completed runs
 ```
 
@@ -77,6 +84,28 @@ runner: the PR diff is what needs reviewing.
    runs whose results were published.
 5. Start *Actions → Update dashboard → Run workflow* once.
 
+## Validating a Geant4 version
+
+The *Geant4 versions* page starts `geant4-release.yml` in `ci-workflows` with the chosen
+tag (see its README). If the base image of that tag is published, it starts the full
+pipeline of every test in `tests.json`; otherwise it starts the build of the base image
+in `geant4-alma9`, which starts the tests once the image is published (hours later). The
+page shows the plan before starting, asks for confirmation and follows the run.
+
+Only **maintainers of `ci-workflows`** can start it: GitHub requires write access to that
+repository to start its workflows, whatever the page shows. The page is static and
+public, so it cannot hide anything: it explains what to do, and with a token it checks the
+account's access and disables the button when it is missing. Ways to start it:
+
+- **with a token** saved in the browser (⚙) that also has *Actions: Read and write* on
+  `ci-workflows` (step 4 below): one click;
+- **without**, *Open on GitHub* opens the workflow, where *Run workflow* asks for the tag;
+  the page also shows the equivalent `gh workflow run` command.
+
+The tag list and the image status come from `geant4.json`, so a new Geant4 tag appears
+within one update (10 minutes). Validations started before the workflow got its
+`run-name` show no version.
+
 ## Manual update
 
 **↻ Update now**, at the top right of both pages, starts `update.yml` without waiting for
@@ -105,7 +134,8 @@ token, if the organization requires it).
 2. *Token name*: e.g. `dashboard update`. *Expiration*: your choice (when it expires the
    page says the token was rejected: create a new one).
 3. *Resource owner*: **`G4Med-test`**.
-4. *Repository access*: **Only select repositories → `dashboard`**.
+4. *Repository access*: **Only select repositories → `dashboard`**. Maintainers who want to
+   start Geant4 validations from the page add **`ci-workflows`** too.
 5. *Permissions → Repository permissions → Actions*: **Read and write** (*Metadata: Read*
    is added automatically). Nothing else.
 6. *Generate token*, copy it (`github_pat_…`).
@@ -114,7 +144,9 @@ token, if the organization requires it).
 
 The token is kept only in that browser's `localStorage` and sent only to `api.github.com`.
 Every Pages site of the organization can read that storage (they all live on
-`g4med-test.github.io`), so give the token that single permission and nothing more.
+`g4med-test.github.io`), so give the token that single permission and nothing more. With
+`ci-workflows` included, whoever reads it can start validations on the Padova runner: give
+it a short expiration.
 
 ## Notes
 

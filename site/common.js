@@ -1,4 +1,4 @@
-// Helpers shared by index.html and test.html.
+// Helpers shared by index.html, test.html and geant4.html.
 
 const STAGES = [["build", "Build"], ["unit-test", "Unit test (GitHub)"], ["unit-test-padova", "Unit test (Padova)"],
                 ["run-macro", "Validation"], ["collect-json", "Collect JSON"], ["publish-results", "Publish results"]];
@@ -132,7 +132,8 @@ function initRefresh(box, onUpdated) {
       <h3>Start updates from this page</h3>
       <p>Paste a <a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noopener">fine-grained token</a>
         with the dashboard's organization as resource owner, access to the <b>dashboard</b> repository only and
-        <b>Actions: Read and write</b>. It stays in this browser and is sent only to api.github.com.
+        <b>Actions: Read and write</b> (maintainers add <b>ci-workflows</b> to start Geant4 validations).
+        It stays in this browser and is sent only to api.github.com.
         <a data-a="readme" href="#" target="_blank" rel="noopener">Step by step in the README ↗</a></p>
       <input type="password" name="t" placeholder="github_pat_…" autocomplete="off" spellcheck="false">
       <div class="row"><button class="btn" value="remove">Remove</button><span></span>
