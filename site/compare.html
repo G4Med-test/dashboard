@@ -1,0 +1,230 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Version comparison</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+<style>
+:root { --ref: var(--muted); --cand: var(--accent); }
+.plots { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 560px), 1fr)); gap: 12px; }
+.plot { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; min-width: 0; position: relative; }
+.plot.changed { border-color: var(--run); box-shadow: inset 3px 0 0 var(--run); }
+.plot h3 { margin: 0; font-size: 14px; font-weight: 600; display: flex; gap: 8px; align-items: baseline; justify-content: space-between; flex-wrap: wrap; }
+.plot .meta { font-size: 12px; color: var(--muted); margin-top: 2px; }
+.stats { display: flex; flex-wrap: wrap; gap: 4px 16px; font-size: 12px; color: var(--muted); margin: 8px 0 4px; }
+.stats b { color: var(--ink); font-weight: 500; font-family: "IBM Plex Mono", ui-monospace, monospace; }
+.legend2 { display: flex; gap: 16px; font-size: 12px; color: var(--muted); margin: 4px 0; }
+.legend2 svg { vertical-align: middle; margin-right: 5px; }
+svg.g { display: block; width: 100%; height: auto; overflow: visible; }
+svg.g text { fill: var(--muted); font: 10px "IBM Plex Sans", system-ui, sans-serif; }
+svg.g .grid { stroke: var(--line); stroke-width: 1; }
+svg.g .one { stroke: var(--muted); stroke-width: 1; stroke-dasharray: 2 3; }
+svg.g .ref { stroke: var(--ref); fill: none; stroke-width: 1.5; stroke-dasharray: 5 3; }
+svg.g .cand { stroke: var(--cand); fill: none; stroke-width: 2; }
+svg.g .band { fill: var(--ref); opacity: .16; }
+svg.g .bar { stroke: var(--cand); stroke-width: 1; }
+svg.g .pref { fill: var(--panel); stroke: var(--ref); stroke-width: 1.5; }
+svg.g .pcand { fill: var(--cand); stroke: var(--panel); stroke-width: 2; }
+svg.g .hit { fill: transparent; }
+svg.g .hit:hover, svg.g .hit.on { fill: var(--hover); }
+.tip { position: absolute; pointer-events: none; z-index: 2; background: var(--panel); border: 1px solid var(--line); border-radius: 6px;
+  padding: 6px 9px; font-size: 12px; box-shadow: 0 4px 14px rgb(0 0 0 / .12); white-space: nowrap; }
+.tip b { font-weight: 500; }
+.tip i { display: inline-block; width: 10px; height: 2px; vertical-align: middle; margin-right: 5px; }
+details { margin-top: 6px; font-size: 12px; }
+details summary { cursor: pointer; color: var(--muted); }
+details table td, details table th { padding: 3px 8px; font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 11.5px; }
+.more { text-align: center; margin: 16px 0; }
+.note { font-size: 12.5px; color: var(--muted); margin: 0 0 12px; max-width: 900px; }
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <a class="crumb" id="back" href="geant4.html">← Geant4 versions</a>
+    <h1 id="title">Loading…</h1>
+    <div class="updated" id="sub"></div>
+  </div>
+  <div class="hside"><div class="links" id="links"></div></div>
+</header>
+<main>
+  <div class="kpis" id="kpis"></div>
+  <p class="note" id="note"></p>
+  <div class="plots" id="plots"></div>
+  <div class="more" id="more"></div>
+</main>
+
+<script src="common.js"></script>
+<script>
+// One test, one Geant4 version against the previous one with results: every plot,
+// as computed by ci-workflows' validation/compare.py (collect.py writes compare/<test>/<version>.json).
+const params = new URLSearchParams(location.search), testName = params.get("t"), ver = params.get("v");
+const STATUS = {changed: ["run", "Changed"], incomparable: ["gate", "Incomparable"], removed: ["bad", "Removed"],
+                new: ["idle", "New"], compatible: ["ok", "Compatible"], same: ["ok", "Same"]};
+const PAGE = 40;
+let cmp = null, filter = null, shown = PAGE;
+
+// ROOT-style titles (^{12}C #rightarrow H1) as HTML.
+const GREEK = {rightarrow: "→", partial: "∂", sigma: "σ", Omega: "Ω", omega: "ω", theta: "θ", alpha: "α", beta: "β", gamma: "γ",
+               mu: "μ", pi: "π", Delta: "Δ", times: "×", pm: "±", circ: "°", lambda: "λ", rho: "ρ", phi: "φ", eta: "η"};
+const GREEK_RE = new RegExp(`#(${Object.keys(GREEK).sort((a, b) => b.length - a.length).join("|")})`, "g");  // #partialE → ∂E
+const tex = s => esc(s || "").replace(GREEK_RE, (m, w) => GREEK[w])
+  .replace(/\^\{([^}]*)\}/g, "<sup>$1</sup>").replace(/_\{([^}]*)\}/g, "<sub>$1</sub>");
+
+function num(v) {
+  if (v == null || !isFinite(v)) return "—";
+  const a = Math.abs(v);
+  return a !== 0 && (a < 1e-3 || a >= 1e5) ? v.toExponential(2) : +v.toPrecision(4) + "";
+}
+function niceTicks(lo, hi, n = 4) {
+  const span = hi - lo || Math.abs(hi) || 1, raw = span / n, mag = 10 ** Math.floor(Math.log10(raw)), f = raw / mag;
+  const step = (f >= 7.5 ? 10 : f >= 3.5 ? 5 : f >= 1.5 ? 2 : 1) * mag, out = [];
+  for (let v = Math.ceil(lo / step) * step; v <= hi + step * 1e-9; v += step) out.push(+v.toPrecision(12));
+  return out;
+}
+
+// Both versions over the same x axis, and below them the ratio new/reference.
+function chart(p, i) {
+  const {ref, cand} = p.data, W = 640, L = 52, R = 10, T = 8, H1 = 190, G = 14, H2 = 64, B = 30;
+  const both = [ref, cand].filter(Boolean), hist = p.plotType === "TH1";
+  const xs = both.flatMap(s => hist ? [...s.lo, ...s.hi] : s.x);
+  let [x0, x1] = [Math.min(...xs), Math.max(...xs)];
+  if (!hist) { const pad = (x1 - x0) * .04 || 1; x0 -= pad; x1 += pad; }
+  const ys = both.flatMap(s => s.y.flatMap((y, k) => [y - s.err[k], y + s.err[k]]));
+  let [y0, y1] = [Math.min(0, ...ys), Math.max(...ys)];
+  y1 += (y1 - y0) * .06 || 1;
+  const X = x => L + (x - x0) / (x1 - x0 || 1) * (W - L - R), Y = y => T + H1 - (y - y0) / (y1 - y0 || 1) * H1;
+  const ratio = ref && cand ? cand.y.map((y, k) => ref.y[k] ? {r: y / ref.y[k], e: Math.hypot(cand.err[k] / ref.y[k], y * ref.err[k] / ref.y[k] ** 2)} : null) : [];
+  const dev = Math.max(.05, ...ratio.filter(Boolean).map(q => Math.min(1, Math.abs(q.r - 1) + q.e)));
+  const rT = T + H1 + G, RY = r => rT + H2 / 2 - (r - 1) / dev * (H2 / 2) * .9;
+  const n = (cand || ref).x.length, out = [];
+
+  for (const t of niceTicks(y0, y1)) out.push(`<line class="grid" x1="${L}" x2="${W - R}" y1="${Y(t)}" y2="${Y(t)}"/><text x="${L - 6}" y="${Y(t) + 3}" text-anchor="end">${num(t)}</text>`);
+  for (const t of niceTicks(x0, x1, 6)) out.push(`<text x="${X(t)}" y="${rT + H2 + 14}" text-anchor="middle">${num(t)}</text>`);
+  out.push(`<line class="one" x1="${L}" x2="${W - R}" y1="${RY(1)}" y2="${RY(1)}"/>`,
+           `<text x="${L - 6}" y="${RY(1) + 3}" text-anchor="end">1</text>`,
+           `<text x="${L - 6}" y="${RY(1 + dev) + 9}" text-anchor="end">${num(1 + dev)}</text>`,
+           `<text x="${L - 6}" y="${RY(1 - dev) - 1}" text-anchor="end">${num(1 - dev)}</text>`,
+           `<text x="${L - 40}" y="${rT + H2 / 2 + 3}" text-anchor="middle" transform="rotate(-90 ${L - 40} ${rT + H2 / 2})">ratio</text>`);
+  // Hover targets first, so the marks stay on top.
+  for (let k = 0; k < n; k++) {
+    const s = cand || ref, a = hist ? X(s.lo[k]) : X(s.x[k]) - Math.max(4, (W - L - R) / n / 2), b = hist ? X(s.hi[k]) : X(s.x[k]) + Math.max(4, (W - L - R) / n / 2);
+    out.push(`<rect class="hit" data-k="${k}" x="${a}" width="${Math.max(1, b - a)}" y="${T}" height="${rT + H2 - T}"/>`);
+  }
+  if (ref && hist) out.push(...ref.y.map((y, k) => `<rect class="band" x="${X(ref.lo[k])}" width="${X(ref.hi[k]) - X(ref.lo[k])}" y="${Y(y + ref.err[k])}" height="${Math.max(0, Y(y - ref.err[k]) - Y(y + ref.err[k]))}"/>`));
+  const step = s => "M" + s.y.map((y, k) => `${X(s.lo[k])},${Y(y)} H${X(s.hi[k])}`).join(" L");
+  if (hist) {
+    if (ref) out.push(`<path class="ref" d="${step(ref)}"/>`);
+    if (cand) out.push(`<path class="cand" d="${step(cand)}"/>`, ...cand.y.map((y, k) => cand.err[k] ? `<line class="bar" x1="${X(cand.x[k])}" x2="${X(cand.x[k])}" y1="${Y(y - cand.err[k])}" y2="${Y(y + cand.err[k])}"/>` : ""));
+  } else {
+    for (const [s, c] of [[ref, "pref"], [cand, "pcand"]]) if (s) out.push(...s.y.map((y, k) =>
+      (s.err[k] ? `<line class="${c === "pref" ? "ref" : "bar"}" x1="${X(s.x[k])}" x2="${X(s.x[k])}" y1="${Y(y - s.err[k])}" y2="${Y(y + s.err[k])}"/>` : "") +
+      `<circle class="${c}" cx="${X(s.x[k])}" cy="${Y(y)}" r="4"/>`));
+  }
+  ratio.forEach((q, k) => {
+    if (!q) return;
+    const x = X(cand.x[k]), clamp = r => Math.max(1 - dev, Math.min(1 + dev, r));
+    out.push(`<line class="bar" x1="${x}" x2="${x}" y1="${RY(clamp(q.r - q.e))}" y2="${RY(clamp(q.r + q.e))}"/><circle class="pcand" cx="${x}" cy="${RY(clamp(q.r))}" r="3"/>`);
+  });
+  const tall = rT + H2 + B;
+  return `<svg class="g" viewBox="0 0 ${W} ${tall}" role="img" aria-label="${esc(p.title)}: reference and new version">
+    <text x="${W - R}" y="${tall - 2}" text-anchor="end">${esc(p.xAxisName || "")}</text>${out.join("")}</svg>`;
+}
+
+function tooltip(p, k) {
+  const {ref, cand} = p.data, s = cand || ref;
+  const at = p.plotType === "TH1" ? `${num(s.lo[k])} – ${num(s.hi[k])}` : num(s.x[k]);
+  const v = (d, css, name) => d ? `<div><i style="background:var(${css})"></i>${name} <b>${num(d.y[k])}</b> ± ${num(d.err[k])}</div>` : "";
+  const pull = ref && cand && (ref.err[k] || cand.err[k]) ? (cand.y[k] - ref.y[k]) / Math.hypot(ref.err[k], cand.err[k]) : null;
+  const ratio = ref && cand && ref.y[k] ? cand.y[k] / ref.y[k] : null;
+  return `<div><b>${esc(p.xAxisName || "x")}</b> ${at}</div>${v(ref, "--ref", cmp.reference)}${v(cand, "--cand", cmp.version)}` +
+    (ratio != null ? `<div>ratio <b>${num(ratio)}</b>${pull != null ? ` · pull <b>${num(pull)}</b>σ` : ""}</div>` : "");
+}
+
+function valuesTable(p) {
+  const {ref, cand} = p.data, s = cand || ref, hist = p.plotType === "TH1";
+  const rows = s.x.map((x, k) => `<tr><td>${hist ? `${num(s.lo[k])}–${num(s.hi[k])}` : num(x)}</td>
+    <td>${ref ? `${num(ref.y[k])} ± ${num(ref.err[k])}` : "—"}</td><td>${cand ? `${num(cand.y[k])} ± ${num(cand.err[k])}` : "—"}</td></tr>`).join("");
+  return `<details><summary>Values</summary><div style="overflow-x:auto"><table><thead><tr><th>${esc(p.xAxisName || "x")}</th>
+    <th>${esc(cmp.reference)}</th><th>${esc(cmp.version)}</th></tr></thead><tbody>${rows}</tbody></table></div></details>`;
+}
+
+function card(p, i) {
+  const [c, text] = STATUS[p.status];
+  const params_ = (p.parameters || []).map(x => `${x.names} ${x.values}`).join(", ");
+  const meta = [p.secondary && p.secondary !== "None" ? `→ ${p.secondary}` : null, params_, p.beam && `${p.beam} ${(p.energies || []).join(", ")}`,
+                p.target, p.model].filter(Boolean).map(esc).join(" · ");
+  const stats = p.status === "incomparable" ? `<span>${esc(p.reason || "")}</span>`
+    : ["changed", "compatible"].includes(p.status) ? [
+        p.ndf ? `<span>χ²/ndf <b>${num(p.chi2)}/${p.ndf}</b></span><span>p <b>${num(p.p)}</b></span>` : `<span>no uncertainties</span>`,
+        `<span>max rel. diff <b>${num(100 * p.max_rel_diff)}%</b></span>`,
+        p.worst != null ? `<span>largest at ${esc(p.xAxisName || "x")} <b>${num((p.data.cand || p.data.ref).x[p.worst])}</b></span>` : ""].join("") : "";
+  const has = p.data.ref && p.data.cand;
+  const legend = `<div class="legend2">${p.data.ref ? `<span><svg width="22" height="8"><line x1="0" x2="22" y1="4" y2="4" style="stroke:var(--ref);stroke-width:1.5;stroke-dasharray:5 3"/></svg>${esc(cmp.reference)} (reference)</span>` : ""}
+    ${p.data.cand ? `<span><svg width="22" height="8"><line x1="0" x2="22" y1="4" y2="4" style="stroke:var(--cand);stroke-width:2"/></svg>${esc(cmp.version)}</span>` : ""}
+    ${has ? `<span>lower panel: ${esc(cmp.version)} / ${esc(cmp.reference)}</span>` : ""}</div>`;
+  return `<div class="plot ${p.status}" data-i="${i}">
+    <h3><span>${tex(p.title)}</span><span class="pill ${c}">${text}</span></h3>
+    <div class="meta">${meta}</div><div class="stats">${stats}</div>${legend}
+    ${chart(p, i)}<div class="sub">${tex(p.yAxisName || "")}</div>${valuesTable(p)}</div>`;
+}
+
+function render() {
+  const s = cmp.summary, total = Object.values(s).reduce((a, b) => a + b, 0);
+  document.getElementById("kpis").innerHTML = [["all", "Plots", total], ...Object.keys(STATUS).map(k => [k, STATUS[k][1], s[k]])]
+    .filter(([k, , n]) => k === "all" || n)
+    .map(([k, l, n]) => `<button class="kpi" data-f="${k}" aria-pressed="${filter === k}"><b class="${k === "changed" && n ? "attn" : ""}">${n}</b><small>${l}</small></button>`).join("");
+  document.querySelectorAll(".kpi").forEach(b => b.onclick = () => { filter = b.dataset.f; shown = PAGE; render(); });
+  const list = cmp.plots.map((p, i) => [p, i]).filter(([p]) => filter === "all" || p.status === filter);
+  const el = document.getElementById("plots");
+  el.innerHTML = list.slice(0, shown).map(([p, i]) => card(p, i)).join("") || `<div class="empty">No plots</div>`;
+  document.getElementById("more").innerHTML = list.length > shown ? `<button class="btn" type="button">Show ${Math.min(PAGE, list.length - shown)} more of ${list.length - shown}</button>` : "";
+  document.querySelector("#more button")?.addEventListener("click", () => { shown += PAGE; render(); });
+
+  // Hover: one tooltip per card, following the bin under the pointer.
+  el.querySelectorAll(".plot").forEach(cardEl => {
+    const p = cmp.plots[+cardEl.dataset.i], svg = cardEl.querySelector("svg.g");
+    if (!svg) return;
+    const tip = document.createElement("div");
+    tip.className = "tip"; tip.hidden = true; cardEl.append(tip);
+    svg.addEventListener("pointermove", e => {
+      const hit = e.target.closest(".hit");
+      svg.querySelectorAll(".hit.on").forEach(h => h !== hit && h.classList.remove("on"));
+      if (!hit) { tip.hidden = true; return; }
+      hit.classList.add("on");
+      tip.innerHTML = tooltip(p, +hit.dataset.k); tip.hidden = false;
+      const box = cardEl.getBoundingClientRect(), x = e.clientX - box.left, y = e.clientY - box.top;
+      tip.style.left = `${Math.min(x + 14, box.width - tip.offsetWidth - 6)}px`;
+      tip.style.top = `${Math.max(4, y - tip.offsetHeight - 10)}px`;
+    });
+    svg.addEventListener("pointerleave", () => { tip.hidden = true; svg.querySelectorAll(".hit.on").forEach(h => h.classList.remove("on")); });
+  });
+}
+
+async function load() {
+  document.getElementById("back").href = `geant4.html?v=${encodeURIComponent("v" + ver)}`;
+  try {
+    cmp = await getJSON(`compare/${encodeURIComponent(testName)}/${encodeURIComponent(ver)}.json`);
+  } catch (e) {
+    document.getElementById("title").textContent = "No comparison for this test and version";
+    return;
+  }
+  document.title = `${cmp.test} · ${cmp.version} vs ${cmp.reference}`;
+  document.getElementById("title").innerHTML = `${esc(cmp.test)} <span>· Geant4 ${esc(cmp.version)} vs ${esc(cmp.reference)}</span>`;
+  document.getElementById("sub").textContent = "Latest results of each version in validation-results";
+  document.getElementById("links").innerHTML = [[`test.html?t=${encodeURIComponent(cmp.test)}`, "Test page", false],
+    [`https://github.com/G4Med-test/validation-results/tree/HEAD/${encodeURIComponent(cmp.test)}/versions`, "Results ↗", true]]
+    .map(([u, l, ext]) => `<a class="btn" href="${esc(u)}"${ext ? ' target="_blank" rel="noopener"' : ""}>${esc(l)}</a>`).join("");
+  document.getElementById("note").innerHTML = `Plots are matched by test, model, metadata, title and axes. <b>Changed</b>: the χ² of the differences,
+    with the uncertainties of both versions, has p &lt; ${cmp.alpha}, or a point without uncertainties differs by more than
+    ${num(100 * cmp.rel_tol)}%. A change is not necessarily wrong: it is where to look. Grey band: uncertainty of the reference.`;
+  filter = cmp.summary.changed ? "changed" : "all";
+  render();
+}
+load();
+</script>
+</body>
+</html>
