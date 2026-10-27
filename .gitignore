@@ -4,3 +4,5 @@ cache/
 validation-results/
 __pycache__/
 site/geant4.json
+site/compare/
+.DS_Store

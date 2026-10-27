@@ -34,6 +34,13 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.DASHBOARD_TOKEN || github.token }}
 
+      # compare.py, to compare the results of each Geant4 version with the previous one.
+      - name: Check out ci-workflows
+        uses: actions/checkout@v4
+        with:
+          repository: G4Med-test/ci-workflows
+          path: ci-workflows
+
       # Details of completed runs never change: keep them between updates so that
       # only new runs cost API calls. A new key is saved every time; restore-keys
       # picks the most recent one.
@@ -47,10 +54,12 @@ jobs:
       - name: Collect pipeline status
         env:
           # GITHUB_TOKEN reads the org's public repos; private test repos need
-          # DASHBOARD_TOKEN (fine-grained: Actions, Contents, Pull requests,
-          # Deployments and Metadata, all read-only).
+          # DASHBOARD_TOKEN (fine-grained: Actions, Contents, Pull requests, Issues,
+          # Deployments and Metadata, all read-only; the Padova runners need the
+          # organization permission Self-hosted runners: read).
           GITHUB_TOKEN: ${{ secrets.DASHBOARD_TOKEN || github.token }}
           RESULTS_DIR: validation-results
+          COMPARE_TOOLS: ci-workflows/validation
           OUTPUT_DIR: site
           CACHE_FILE: cache/runs.json
         run: python3 scripts/collect.py

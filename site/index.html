@@ -115,6 +115,16 @@ function histCell(t) {
   }).join("")}</div>`;
 }
 
+// Jobs on the Padova runner set: running, queued, and its runners when the token may read them.
+function padovaKpi() {
+  const p = data.padova;
+  if (!p) return "";
+  const busy = p.runners ? p.runners.filter(r => r.busy).length : null;
+  const detail = [`${p.queued_jobs} queued`, p.runners ? `${busy}/${p.runners.length} runners busy` : null].filter(Boolean).join(" · ");
+  return `<div class="kpi" title="Jobs of the tests on ${esc(p.label)}${p.runners ? "" : " (the runners are not visible to the dashboard token)"}">
+    <b class="${p.queued_jobs ? "attn" : ""}">${p.running_jobs}</b><small>Padova jobs running · ${esc(detail)}</small></div>`;
+}
+
 function render() {
   const tests = data.tests;
   const counts = {all: tests.length, running: 0, ok: 0, failing: 0, never: 0};
@@ -123,7 +133,7 @@ function render() {
               ["approval", "Awaiting approval", tests.reduce((n, t) => n + awaiting(t).length, 0), "attn"],
               ["failing", "Last run failed", counts.failing], ["pubfail", "Publication failed", tests.filter(pubFailed).length]];
   document.getElementById("kpis").innerHTML = kp.map(([k, l, n, c]) =>
-    `<button class="kpi" data-f="${k}" aria-pressed="${filter === k}"><b class="${n && c ? c : ""}">${n}</b><small>${l}</small></button>`).join("");
+    `<button class="kpi" data-f="${k}" aria-pressed="${filter === k}"><b class="${n && c ? c : ""}">${n}</b><small>${l}</small></button>`).join("") + padovaKpi();
   document.querySelectorAll(".kpi").forEach(b => b.onclick = () => { filter = filter === b.dataset.f ? "all" : b.dataset.f; render(); });
 
   const keep = {all: () => true, approval: t => awaiting(t).length, pubfail: pubFailed};

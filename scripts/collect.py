@@ -9,9 +9,12 @@ Writes:
 Sources:
   - GitHub REST API: the org's repositories, each test's ci.yml runs and jobs, open pull
     requests, pending deployments, and the build-job annotation with the Geant4 version;
-    the runs of ci-workflows' geant4-release.yml and geant4-alma9's build.yml;
+    the Geant4 validations (issues of ci-workflows labelled geant4-release), the runs of
+    geant4-alma9's build.yml and, if the token may read them, the org's Padova runners;
   - a local clone of G4Med-test/validation-results (full history): when each test's
-    results were published, from which commit and with which Geant4 version;
+    results were published, from which commit and with which Geant4 version, and the
+    results of each version (<test>/versions/), compared with ci-workflows'
+    validation/compare.py (COMPARE_TOOLS) into <OUTPUT_DIR>/compare/<test>/<version>.json;
   - the tags of github.com/Geant4/geant4 (git ls-remote) and of the base image on GHCR.
 
 Details of completed runs never change, so they are kept in CACHE_FILE between updates
@@ -19,6 +22,7 @@ and only new runs cost API calls (at most MAX_DETAIL_FETCHES per update).
 
 Only the standard library is used. Environment:
   GITHUB_TOKEN         API token (the Actions GITHUB_TOKEN is enough for public repos)
+  COMPARE_TOOLS        ci-workflows/validation, with compare.py (default ./ci-workflows/validation)
   ORG                  organization (default G4Med-test)
   RESULTS_DIR          clone of validation-results (default ./validation-results)
   OUTPUT_DIR           output directory (default ./site)
@@ -52,6 +56,8 @@ PIPELINE_REF = f"{ORG}/ci-workflows/.github/workflows/pipeline.yml"
 EXCLUDE = {"ci-workflows", "validation-results", "geant4-alma9", "template", "dashboard", ".github"}
 WORKFLOW_FILE = "ci.yml"
 VERSION_ANNOTATION = re.compile(r"^Geant4\s+(\S+)$")
+PADOVA_LABEL = "geant-gha-runner-on-padova"
+COMPARE_TOOLS = Path(os.environ.get("COMPARE_TOOLS", "ci-workflows/validation"))
 
 # Pipeline stages in order; the first group runs on GitHub, the second needs approval.
 STAGES = ["build", "unit-test", "unit-test-padova", "run-macro", "collect-json", "publish-results"]
@@ -189,7 +195,10 @@ def job_details(full, run):
     # "full" once a gated job has actually started: queued/waiting ones are still behind the gate.
     not_started = (None, "skipped", "queued", "pending", "waiting", "requested")
     gated_ran = any(stages.get(s, {}).get("state") not in not_started for s in GATED_STAGES)
-    return {"stages": stages, "current": current, "geant4": geant4,
+    on_padova = [j for j in jobs if PADOVA_LABEL in (j.get("labels") or [])]
+    padova = {"queued": sum(j["status"] in ("queued", "pending", "waiting") for j in on_padova),
+              "running": sum(j["status"] == "in_progress" for j in on_padova)}
+    return {"stages": stages, "current": current, "geant4": geant4, "padova": padova,
             "scope": "full" if gated_ran else "github"}
 
 
@@ -330,7 +339,6 @@ RELEASE_REPO, RELEASE_WORKFLOW = f"{ORG}/ci-workflows", "geant4-release.yml"
 BASE_REPO, BASE_WORKFLOW = f"{ORG}/geant4-alma9", "build.yml"
 # The tags geant4-alma9 can build and geant4-release.yml accepts.
 GEANT4_TAG = re.compile(r"v(\d+)\.(\d+)\.(\d+)([.-][A-Za-z0-9][A-Za-z0-9.-]*)?\Z")
-RELEASE_RUN = re.compile(r"^Validate Geant4 (\S+)$")  # run-name of geant4-release.yml
 
 
 def upstream_geant4_tags():
@@ -358,30 +366,28 @@ def base_image_tags():
     return tags
 
 
-def release_runs(cache, used_keys):
-    """Recent runs of geant4-release.yml: tag, and whether they started the tests or a base build."""
-    data = api(f"/repos/{RELEASE_REPO}/actions/workflows/{RELEASE_WORKFLOW}/runs", {"per_page": 20}) or {}
+RELEASE_LABEL = "geant4-release"
+RELEASE_STATE = re.compile(r"<!-- g4med-release\s*(\{.*?\})\s*-->", re.S)  # see ci-workflows/scripts/release.py
+
+
+def release_issues():
+    """Geant4 validations: the state kept by release.py in the issues of ci-workflows."""
     out = []
-    for r in data.get("workflow_runs", []):
-        m = RELEASE_RUN.match(r.get("display_title") or "")
-        rec = {"id": r["id"], "url": r["html_url"], "tag": m[1] if m else None,
-               "status": r["status"], "conclusion": r["conclusion"], "event": r["event"],
-               "actor": (r.get("triggering_actor") or r.get("actor") or {}).get("login"),
-               "started_at": r["run_started_at"]}
-        key = f"{RELEASE_REPO}/{r['id']}/{r['run_attempt']}"
-        used_keys.add(key)
-        if key in cache:
-            rec.update(cache[key])
-        else:
-            jobs = api_pages(f"/repos/{RELEASE_REPO}/actions/runs/{r['id']}/jobs", key="jobs")
-            started = [j for j in jobs if j["name"] not in ("list-tests", "build-base-image")]
-            base = next((j for j in jobs if j["name"] == "build-base-image"), None)
-            rec["tests_started"] = sum(j["conclusion"] == "success" for j in started)
-            rec["tests_failed"] = sum(j["conclusion"] in BAD for j in started)
-            rec["base_build"] = base["conclusion"] if base and base["conclusion"] != "skipped" else None
-            if r["status"] == "completed":
-                cache[key] = {k: rec[k] for k in ("tests_started", "tests_failed", "base_build")}
-        out.append(rec)
+    for issue in api(f"/repos/{RELEASE_REPO}/issues", {"labels": RELEASE_LABEL, "state": "all", "per_page": 50}) or []:
+        m = RELEASE_STATE.search(issue.get("body") or "")
+        if "pull_request" in issue or not m:
+            continue
+        try:
+            state = json.loads(m.group(1))
+        except ValueError:
+            continue
+        out.append({"tag": state["tag"], "phase": state.get("phase"), "url": issue["html_url"],
+                    "open": issue["state"] == "open", "created_at": issue["created_at"],
+                    "updated_at": issue["updated_at"], "closed_at": issue.get("closed_at"),
+                    "requested_by": state.get("requested_by"), "max_parallel": state.get("max_parallel"),
+                    "image_requests": len(state.get("image_requests") or []),
+                    "tests": [{"name": t["repo"].split("/")[1], **{k: t.get(k) for k in
+                               ("state", "url", "median_s", "duration_s", "attempts")}} for t in state.get("tests", [])]})
     return out
 
 
@@ -392,7 +398,56 @@ def base_builds():
             for r in data.get("workflow_runs", []) if r["status"] != "completed" and r["event"] != "pull_request"]
 
 
-def geant4_versions(details, cache, used_keys):
+def comparisons():
+    """Each Geant4 version of each test against the previous one with results.
+
+    Details (every plot, with both series) go to compare/<test>/<version>.json; the
+    summaries are returned as {version: {test: {reference, summary}}}."""
+    sys.path.insert(0, str(COMPARE_TOOLS))
+    try:
+        import compare
+    except ImportError:
+        raise OSError(f"compare.py not found in {COMPARE_TOOLS}") from None
+    out = {}
+    tests = sorted(p for p in RESULTS_DIR.iterdir() if (p / "versions").is_dir()) if RESULTS_DIR.is_dir() else []
+    for test in tests:
+        versions = sorted((d.name for d in (test / "versions").iterdir() if (d / "results.json").exists()),
+                          key=compare.version_key)
+        if versions:
+            first = compare.load(test / "versions" / versions[0])
+            out.setdefault(versions[0], {})[test.name] = {"reference": None, "plots": len(first)}
+        for ref, cand in zip(versions, versions[1:]):
+            res = compare.compare(compare.load(test / "versions" / ref), compare.load(test / "versions" / cand),
+                                  with_data=True)
+            path = OUTPUT_DIR / "compare" / test.name / f"{cand}.json"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps({"test": test.name, "version": cand, "reference": ref, **res}) + "\n")
+            out.setdefault(cand, {})[test.name] = {"reference": ref, "summary": res["summary"],
+                                                    "plots": sum(res["summary"].values())}
+    return out
+
+
+def padova_status(summaries):
+    """Padova runners (needs org "Self-hosted runners: read") and the jobs for them.
+
+    They are an autoscaling runner set (ARC): ephemeral runners named <set>-<id>, with
+    no labels, created per job up to the set's maximum."""
+    runners = None
+    try:
+        data = api(f"/orgs/{ORG}/actions/runners", {"per_page": 100})
+        if data:
+            runners = [{"name": r["name"], "status": r["status"], "busy": r["busy"]} for r in data["runners"]
+                       if r["name"].startswith(PADOVA_LABEL + "-")
+                       or any(label["name"] == PADOVA_LABEL for label in r.get("labels", []))]
+    except urllib.error.HTTPError:
+        pass  # the token may not read the organization's runners: only the jobs are shown
+    active = [r.get("padova") or {} for t in summaries for r in t["running"]]
+    return {"label": PADOVA_LABEL, "runners": runners,
+            "queued_jobs": sum(p.get("queued", 0) for p in active),
+            "running_jobs": sum(p.get("running", 0) for p in active)}
+
+
+def geant4_versions(details):
     """geant4.json: what the Geant4 versions page offers and shows."""
     out = {"upstream": GEANT4_UPSTREAM.removesuffix(".git"), "image": f"ghcr.io/{BASE_IMAGE}",
            "release_repo": RELEASE_REPO, "release_workflow": RELEASE_WORKFLOW,
@@ -410,10 +465,15 @@ def geant4_versions(details, cache, used_keys):
     # published is None when GHCR could not be read: the page then says it is unknown.
     out["tags"] = [{"tag": t, "published": None if images is None else t in images} for t in tags]
     try:
-        out["runs"], out["base_builds"] = release_runs(cache, used_keys), base_builds()
+        out["releases"], out["base_builds"] = release_issues(), base_builds()
     except OSError as err:  # including HTTP errors
-        out["runs"], out["base_builds"] = [], []
-        out["errors"].append(f"Workflow runs unavailable: {err}")
+        out["releases"], out["base_builds"] = [], []
+        out["errors"].append(f"Validations unavailable: {err}")
+    try:
+        out["compared"] = comparisons()
+    except (OSError, ValueError, KeyError) as err:
+        out["compared"] = {}
+        out["errors"].append(f"Comparisons unavailable: {err}")
 
     # Latest full-pipeline run of each test with each Geant4 version (geant4-config --version).
     by_version = {}
@@ -421,7 +481,7 @@ def geant4_versions(details, cache, used_keys):
         for r in d["runs"]:  # newest first
             if r.get("geant4") and r.get("scope") == "full":
                 by_version.setdefault(r["geant4"], {}).setdefault(d["name"], {
-                    k: r.get(k) for k in ("url", "status", "conclusion", "started_at", "event")})
+                    k: r.get(k) for k in ("url", "status", "conclusion", "started_at", "event", "duration_s")})
     out["tested"] = by_version
     for err in out["errors"]:
         print(f"warning: {err}", file=sys.stderr)
@@ -494,7 +554,7 @@ def main():
         summaries.append(summary)
         details.append(detail)
         (OUTPUT_DIR / "tests" / f"{repo['name']}.json").write_text(json.dumps(detail, indent=1) + "\n")
-    geant4 = geant4_versions(details, cache, used_keys)
+    geant4 = geant4_versions(details)
 
     data = {
         "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
@@ -503,6 +563,7 @@ def main():
         "dashboard_repo": os.environ.get("GITHUB_REPOSITORY", f"{ORG}/dashboard"),
         "results_repo": results_url or f"https://github.com/{ORG}/validation-results",
         "tests": summaries,
+        "padova": padova_status(summaries),
         "orphan_results": sorted(set(publications) - {t["name"] for t in summaries}),
         "undetailed_runs": undetailed,
         "api_calls": calls,

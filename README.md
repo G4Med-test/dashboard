@@ -5,7 +5,8 @@ Static GitHub Pages site showing every G4Med test that uses
 
 - **Overview** (`index.html`): what is running and on which job, result and duration of
   the last run, Geant4 version, publication to `validation-results`, open pull requests and
-  where they stand in the approval flow, recent history. Click a test for its page.
+  where they stand in the approval flow, recent history, jobs running and queued on the
+  Padova runners. Click a test for its page.
 - **Test page** (`test.html?t=<name>`): links to the repository, Actions, pull requests and
   the test's folder in `validation-results`; open pull requests with an *Opened → GitHub
   checks → Approval → Padova & validation* tracker and the button to approve or follow the
@@ -13,18 +14,25 @@ Static GitHub Pages site showing every G4Med test that uses
   publication; every publication to `validation-results`.
 - **Geant4 versions** (`geant4.html?v=<tag>`): every tag of
   [Geant4/geant4](https://github.com/Geant4/geant4/tags) that the base image can be built
-  from, whether `ghcr.io/g4med-test/geant4-alma9:<tag>` is published, which tests already
-  ran the full pipeline with it, and recent validations. Maintainers start the validation
-  of a version from here (see [Validating a Geant4 version](#validating-a-geant4-version)).
+  from and whether `ghcr.io/g4med-test/geant4-alma9:<tag>` is published; for the chosen
+  version, the progress of its validation (queue, running, results), each test's last full
+  run and how many plots changed with respect to the previous version; a test × version
+  matrix; recent validations. Maintainers start or rerun validations from here (see
+  [Validating a Geant4 version](#validating-a-geant4-version)).
+- **Comparison** (`compare.html?t=<test>&v=<version>`): every plot of a test with that
+  Geant4 version over the previous one with results, with the ratio, χ², p-value and status
+  of ci-workflows' `validation/compare.py`; changed plots first.
 
 ## How it works
 
 ```text
 cron every 10 min ──► update.yml ──► scripts/collect.py ──► site/data.json + site/tests/<name>.json ──► Pages
-                                     │                       + site/geant4.json
+end of each pipeline ┘               │                       + site/geant4.json + site/compare/<test>/<version>.json
                                      │                       site/*.html read the JSON (reload every 60 s)
-                                     ├─ GitHub API (runs, jobs, PRs, pending deployments)
-                                     ├─ clone of validation-results (publications + provenance.json)
+                                     ├─ GitHub API (runs, jobs, PRs, pending deployments, Padova runners,
+                                     │  validation issues of ci-workflows)
+                                     ├─ clone of validation-results (publications, provenance.json, versions/)
+                                     ├─ clone of ci-workflows (validation/compare.py)
                                      ├─ git ls-remote of Geant4/geant4, tag list of the base image on GHCR
                                      └─ actions/cache with the details of completed runs
 ```
@@ -76,21 +84,29 @@ runner: the PR diff is what needs reviewing.
 1. Create `G4Med-test/dashboard` with these files.
 2. *Settings → Pages → Source: **GitHub Actions***.
 3. Public test repositories need nothing more. For private ones add the secret
-   **`DASHBOARD_TOKEN`**: fine-grained, owner `G4Med-test`, access to the test repositories
-   and `validation-results`, read-only *Actions*, *Contents*, *Pull requests*,
-   *Deployments* and *Metadata*.
-4. Apply `ci-workflows-geant4-version.patch` to `ci-workflows`: the build job then records
-   `geant4-config --version` as an annotation. Without it the version is known only for
-   runs whose results were published.
-5. Start *Actions → Update dashboard → Run workflow* once.
+   **`DASHBOARD_TOKEN`**: fine-grained, owner `G4Med-test`, access to the test repositories,
+   `ci-workflows` and `validation-results`, read-only *Actions*, *Contents*, *Issues*,
+   *Pull requests*, *Deployments* and *Metadata*. To show the Padova runners (otherwise
+   only their jobs are counted), add the organization permission *Self-hosted runners:
+   read*: the runners of an organization are visible only to its administrators.
+4. Start *Actions → Update dashboard → Run workflow* once.
+
+The Geant4 version of each run comes from the `Geant4 <version>` annotation of the build
+job (ci-workflows' `apptainer-build-deploy.yml`, formerly `ci-workflows-geant4-version.patch`);
+runs from before it have the version only if their results were published.
 
 ## Validating a Geant4 version
 
 The *Geant4 versions* page starts `geant4-release.yml` in `ci-workflows` with the chosen
-tag (see its README). If the base image of that tag is published, it starts the full
-pipeline of every test in `tests.json`; otherwise it starts the build of the base image
-in `geant4-alma9`, which starts the tests once the image is published (hours later). The
-page shows the plan before starting, asks for confirmation and follows the run.
+tag (see *Validating a Geant4 version* in its README). If the base image of that tag is
+missing it is built first (hours). Then the tests run fastest first (median duration of
+their recent runs), at most *N* at a time (chosen on the page, default 3), and when all
+have finished the validation's issue in ci-workflows gets a report comparing each test
+with its previous Geant4 version. The page shows the plan, asks for confirmation, then
+shows the queue and the progress, from that issue, at every update.
+
+**Rerun N failed** appears when some tests failed with the chosen version: it requests
+the same validation for those tests only.
 
 Only **maintainers of `ci-workflows`** can start it: GitHub requires write access to that
 repository to start its workflows, whatever the page shows. The page is static and
@@ -102,9 +118,8 @@ account's access and disables the button when it is missing. Ways to start it:
 - **without**, *Open on GitHub* opens the workflow, where *Run workflow* asks for the tag;
   the page also shows the equivalent `gh workflow run` command.
 
-The tag list and the image status come from `geant4.json`, so a new Geant4 tag appears
-within one update (10 minutes). Validations started before the workflow got its
-`run-name` show no version.
+The tag list, the image status and the progress come from `geant4.json`, so they change
+at each update (10 minutes, or at the end of each pipeline).
 
 ## Manual update
 
@@ -150,13 +165,11 @@ it a short expiration.
 
 ## Notes
 
-- **Scheduled workflows are disabled after 60 days** without activity in a public
-  repository. To avoid it, and to refresh the page as soon as a pipeline ends, add a last
-  job to `pipeline.yml` (`if: always()`) running
-  `gh workflow run update.yml -R G4Med-test/dashboard` with the existing
-  `G4MED_DISPATCH_TOKEN` (with *Actions: write* on `dashboard` too), passed from each
-  test's `ci.yml`, e.g. with `secrets: inherit`.
+- The last job of `pipeline.yml` (`notify`) starts `update.yml` when a pipeline ends, with
+  `G4MED_DISPATCH_TOKEN` (which needs *Actions: write* on `dashboard` too): the page
+  refreshes at once, and the cron stays enabled (GitHub disables scheduled workflows after
+  60 days without activity in a public repository).
 - GitHub's cron is not punctual: 5–15 minute delays are normal. The page shows the age of
   the data and turns orange after 30 minutes.
 - Local preview: `GITHUB_TOKEN=$(gh auth token) RESULTS_DIR=../validation-results
-  python3 scripts/collect.py && python3 -m http.server -d site`.
+  COMPARE_TOOLS=../ci-workflows/validation python3 scripts/collect.py && python3 -m http.server -d site`.

@@ -36,6 +36,14 @@ const label = st => ({success: "Passed", failure: "Failed", cancelled: "Cancelle
 
 const runState = r => r.status === "completed" ? r.conclusion : r.status;
 
+// Geant4 versions in order, as ci-workflows' compare.py: 11.4.0.beta < 11.4.0 < 11.4.1.
+function versionCmp(a, b) {
+  const key = v => { const m = /^v?(\d+)\.(\d+)\.(\d+)(.*)$/.exec(v) || [0, -1, -1, -1, v]; return [+m[1], +m[2], +m[3], m[4] ? 0 : 1, m[4]]; };
+  const [x, y] = [key(a), key(b)];
+  for (let i = 0; i < 4; i++) if (x[i] !== y[i]) return x[i] - y[i];
+  return x[4] < y[4] ? -1 : x[4] > y[4] ? 1 : 0;
+}
+
 function stagesBar(stages) {
   if (!stages) return "";
   return `<div class="stages">${STAGES.map(([k, name]) => {

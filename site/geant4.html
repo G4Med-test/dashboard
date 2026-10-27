@@ -14,7 +14,8 @@
 .launch .row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; }
 .launch label { font-weight: 500; }
 select { font: 13px "IBM Plex Mono", ui-monospace, monospace; padding: 5px 8px; border: 1px solid var(--line); border-radius: 6px;
-  background: var(--bg); color: var(--ink); min-width: 220px; max-width: 100%; }
+  background: var(--bg); color: var(--ink); max-width: 100%; }
+#tag { min-width: 220px; }
 .launch ol { margin: 0; padding-left: 20px; color: var(--muted); }
 .launch ol b, .launch ol code { color: var(--ink); }
 .access { font-size: 13px; color: var(--muted); border-top: 1px solid var(--line); padding-top: 12px; }
@@ -24,6 +25,13 @@ code.cmd { display: block; margin-top: 6px; padding: 7px 10px; border: 1px solid
 .banner { background: var(--run-bg); color: var(--run); border-radius: 8px; padding: 8px 12px; margin-bottom: 12px; font-size: 13px; }
 .banner.bad { background: var(--bad-bg); color: var(--bad); }
 dialog.tok ul { margin: 0 0 12px; padding-left: 18px; color: var(--muted); font-size: 13px; }
+.matrix th.v { text-align: center; font-family: "IBM Plex Mono", ui-monospace, monospace; text-transform: none; letter-spacing: 0; }
+.matrix td.c { text-align: center; padding: 6px; }
+.cell { display: inline-flex; align-items: center; justify-content: center; min-width: 34px; height: 22px; padding: 0 6px; border-radius: 4px;
+  font-size: 12px; font-weight: 500; }
+a.cell:hover { text-decoration: none; filter: brightness(.95); }
+.cell.none { color: var(--idle); }
+.delta { color: var(--run); font-size: 12px; }
 </style>
 </head>
 <body>
@@ -51,24 +59,38 @@ dialog.tok ul { margin: 0 0 12px; padding-left: 18px; color: var(--muted); font-
     <ol id="plan"></ol>
     <div class="row">
       <button type="button" class="btn primary" id="go" disabled>Run all tests</button>
+      <button type="button" class="btn" id="rerun" hidden>Rerun failed</button>
+      <label class="sub" for="par">at most</label>
+      <select id="par" aria-label="Pipelines at the same time">
+        <option>1</option><option>2</option><option selected>3</option><option>4</option><option>6</option><option>8</option>
+      </select>
+      <span class="sub">pipelines at a time</span>
       <span class="sub" id="note" aria-live="polite"></span>
     </div>
     <div class="access" id="access"></div>
   </div>
 
-  <h2 id="testedTitle">Tests with this version <small>latest full pipeline of each test</small></h2>
+  <h2 id="relTitle">Tests with this version <small id="relSub"></small></h2>
   <div class="panel">
     <table>
-      <thead><tr><th>Test</th><th>Result</th><th>Started</th></tr></thead>
-      <tbody id="tested"><tr><td colspan="3" class="empty">Loading…</td></tr></tbody>
+      <thead><tr><th>Test</th><th>This validation</th><th>Last full run</th><th>Duration</th><th>Plots vs previous version</th></tr></thead>
+      <tbody id="tested"><tr><td colspan="5" class="empty">Loading…</td></tr></tbody>
     </table>
   </div>
 
-  <h2>Recent validations <small>runs of <span id="wfname" class="mono">geant4-release.yml</span></small></h2>
+  <h2>All versions <small>last full pipeline of each test with each Geant4 version · Δ = plots changed with respect to the previous version</small></h2>
+  <div class="panel">
+    <table class="matrix">
+      <thead id="mhead"></thead>
+      <tbody id="matrix"><tr><td class="empty">Loading…</td></tr></tbody>
+    </table>
+  </div>
+
+  <h2>Recent validations <small>one issue per version in <span id="relrepo" class="mono"></span></small></h2>
   <div class="panel">
     <table>
-      <thead><tr><th>Version</th><th>Started</th><th>By</th><th>Outcome</th></tr></thead>
-      <tbody id="runs"><tr><td colspan="4" class="empty">Loading…</td></tr></tbody>
+      <thead><tr><th>Version</th><th>Requested</th><th>By</th><th>State</th><th>Issue</th></tr></thead>
+      <tbody id="runs"><tr><td colspan="5" class="empty">Loading…</td></tr></tbody>
     </table>
   </div>
 </main>
@@ -82,13 +104,32 @@ dialog.tok ul { margin: 0 0 12px; padding-left: 18px; color: var(--muted); font-
 
 <script src="common.js"></script>
 <script>
-// Starts ci-workflows' geant4-release.yml (see the README, "Geant4 versions"): with the
-// base image published it starts every test; otherwise it builds the image first.
+// Starts ci-workflows' geant4-release.yml (README, "Validating a Geant4 version"): the
+// tests run fastest first, at most N at a time, after building the base image if needed.
+// The progress of each validation comes from its issue (geant4.json "releases").
 let g4 = null, overview = null, perm = null, launch = null;
-const sel = document.getElementById("tag"), goBtn = document.getElementById("go");
+const sel = document.getElementById("tag"), goBtn = document.getElementById("go"), rerunBtn = document.getElementById("rerun");
+const parSel = document.getElementById("par");
 const version = tag => tag.replace(/^v/, "");  // tag → geant4-config --version
 const current = () => g4?.tags.find(t => t.tag === sel.value);
 const GEANT4_RELEASE = /^v\d+\.\d+\.\d+$/;
+const FINAL = new Set(["success", "failure", "cancelled", "timed_out", "startup_failure", "skipped", "neutral", "stale", "dispatch_failed"]);
+const FAILED = new Set(["failure", "cancelled", "timed_out", "startup_failure", "stale", "dispatch_failed"]);
+const PHASES = {"waiting-image": ["gate", "Waiting for the base image"], running: ["run", "Running"],
+                done: ["ok", "Finished"], failed: ["bad", "Failed"]};
+
+// Latest validation (issue) of a tag.
+const release = tag => g4.releases.filter(r => r.tag === tag).sort((a, b) => b.created_at.localeCompare(a.created_at))[0];
+
+// Where each test stands with a version: its state in the validation if finished there, else its last full run.
+function testStates(tag) {
+  const rel = release(tag), tested = g4.tested[version(tag)] || {};
+  return Object.fromEntries((overview?.tests || []).map(t => {
+    const r = rel?.tests.find(x => x.name === t.name), run = tested[t.name];
+    return [t.name, {rel: r, run, state: r && FINAL.has(r.state) ? r.state : run ? runState(run) : null}];
+  }));
+}
+const failedTests = tag => Object.entries(testStates(tag)).filter(([, s]) => FAILED.has(s.state)).map(([n]) => n);
 
 function fillSelect() {
   const want = sel.value || new URLSearchParams(location.search).get("v");
@@ -103,71 +144,120 @@ function fillSelect() {
 }
 
 function renderLaunch() {
-  const t = current(), n = overview?.tests.length ?? 0;
-  const tested = t ? Object.values(g4.tested[version(t.tag)] || {}) : [];
-  const passed = tested.filter(r => r.conclusion === "success").length;
+  const t = current(), n = overview?.tests.length ?? 0, par = parSel.value;
+  const states = t ? Object.values(testStates(t.tag)) : [], done = states.filter(s => s.state);
+  const passed = done.filter(s => s.state === "success").length, failed = t ? failedTests(t.tag) : [];
   document.getElementById("state").innerHTML = !t ? "" :
     (t.published ? `<span class="pill ok">Base image published</span>`
       : t.published === false ? `<span class="pill gate">Base image not built yet</span>`
       : `<span class="pill idle">Base image: unknown</span>`) +
-    ` <span class="sub">${tested.length ? `${tested.length} of ${n} tests already run with it, ${passed} passed` : "no test run with it yet"}</span>`;
+    ` <span class="sub">${done.length ? `${done.length} of ${n} tests run with it, ${passed} passed` : "no test run with it yet"}</span>`;
 
   const image = t ? `<code>${esc(g4.image)}:${esc(t.tag)}</code>` : "";
   document.getElementById("plan").innerHTML = !t ? "" : [
     ...(t.published ? [] : [`${t.published === false ? "Builds" : "If missing, builds"} the base image ${image} (amd64 and arm64). This takes a while; nothing else starts if it fails.`]),
-    `Starts <b>${n} test pipelines</b> with ${esc(t.tag)}: build, unit tests, then validation on the Padova runner.`,
-    `Results are published to <a href="${esc(overview?.results_repo || "#")}">validation-results</a> as usual; follow them on the <a href="./">overview</a>.`,
+    `Runs <b>${n} test pipelines</b> with ${esc(t.tag)}, <b>fastest first</b> (median of their recent runs), <b>at most ${esc(par)} at a time</b>: build, unit tests, then validation on the Padova runner.`,
+    `When all have finished, the validation's issue gets a report comparing every test with its previous Geant4 version, and whoever started it is notified.`,
   ].map(s => `<li>${s}</li>`).join("");
 
-  const token = local.get(TOKEN_KEY), busy = launch && !launch.done;
-  goBtn.disabled = !t || busy || (token && perm === false);
+  const token = local.get(TOKEN_KEY), busy = launch && !launch.done, blocked = !t || busy || (token && perm === false);
+  goBtn.disabled = blocked;
   goBtn.textContent = !t ? "Run all tests" : token ? `Run all ${n} tests with ${t.tag}` : "Open on GitHub ↗";
+  rerunBtn.hidden = !failed.length || !token;
+  rerunBtn.disabled = blocked;
+  rerunBtn.textContent = `Rerun ${failed.length} failed`;
+  rerunBtn.title = failed.join(", ");
 
-  const repo = g4.release_repo, cmd = t ? `gh workflow run ${g4.release_workflow} -R ${repo} -f geant4_tag=${t.tag}` : "";
-  const wf = `https://github.com/${repo}/actions/workflows/${g4.release_workflow}`;
+  const repo = g4.release_repo, wf = `https://github.com/${repo}/actions/workflows/${g4.release_workflow}`;
+  const cmd = t ? `gh workflow run ${g4.release_workflow} -R ${repo} -f geant4_tag=${t.tag} -f max_parallel=${par}` +
+    (failed.length ? `\n# only the failed ones:\ngh workflow run ${g4.release_workflow} -R ${repo} -f geant4_tag=${t.tag} -f tests=${failed.join(",")}` : "") : "";
   document.getElementById("access").innerHTML = !token
     ? `Only maintainers of <a href="https://github.com/${esc(repo)}">${esc(repo)}</a> (write access) can start a validation.
        Save a token with <b>Actions: Read and write</b> on <span class="mono">ci-workflows</span> (⚙ at the top) to start it from here,
-       or open <a href="${esc(wf)}">the workflow</a> and use <i>Run workflow</i> with the tag, or run:<code class="cmd">${esc(cmd)}</code>`
+       or open <a href="${esc(wf)}">the workflow</a> and use <i>Run workflow</i>, or run:<code class="cmd">${esc(cmd)}</code>`
     : perm === false ? `<span class="warn">Your GitHub account has no write access to ${esc(repo)}: ask one of its maintainers to start the validation.</span>`
     : `Starts <a href="${esc(wf)}">${esc(g4.release_workflow)}</a> in ${esc(repo)} with the token saved in this browser.`;
 }
 
-function outcome(r) {
-  if (r.status !== "completed") return `<a class="pill run" href="${esc(r.url)}">${esc(label(r.status))}</a>`;
-  if (r.base_build === "success") return `<a class="pill gate" href="${esc(r.url)}">Base image build started</a><div class="sub">tests start when it is published</div>`;
-  if (r.tests_started || r.tests_failed) return `<a class="pill ${r.tests_failed ? "bad" : "ok"}" href="${esc(r.url)}">${r.tests_started} pipeline${r.tests_started === 1 ? "" : "s"} started</a>` +
-    (r.tests_failed ? `<div class="sub">${r.tests_failed} could not be started</div>` : "");
-  return `<a class="pill ${cls(r.conclusion)}" href="${esc(r.url)}">${esc(label(r.conclusion))}</a>`;
+function relPill(rel) {
+  const [c, text] = PHASES[rel.phase] || ["idle", rel.phase];
+  const done = rel.tests.filter(t => FINAL.has(t.state)).length, ok = rel.tests.filter(t => t.state === "success").length;
+  const counts = rel.phase === "waiting-image" ? `build requested ${rel.image_requests}×`
+    : `${done}/${rel.tests.length} finished${done ? `, ${ok} passed` : ""}`;
+  return `<a class="pill ${c}" href="${esc(rel.url)}">${esc(text)}</a> <span class="sub">${esc(counts)}</span>`;
+}
+
+function cmpCell(name, ver) {
+  const c = g4.compared[ver]?.[name];
+  if (!c) return `<span class="muted">—</span>`;
+  if (!c.reference) return `<span class="sub">first version with results · ${c.plots} plots</span>`;
+  const s = c.summary, other = ["incomparable", "new", "removed"].filter(k => s[k]).map(k => `${s[k]} ${k}`).join(", ");
+  return `<a href="compare.html?t=${encodeURIComponent(name)}&v=${encodeURIComponent(ver)}">${s.changed ? `<span class="delta">${s.changed} changed</span>` : "no change"}</a>
+    <span class="sub">of ${c.plots} vs ${esc(c.reference)}</span>${other ? `<div class="sub">${esc(other)}</div>` : ""}`;
+}
+
+function renderTested(t) {
+  const rel = t && release(t.tag), ver = t ? version(t.tag) : "";
+  document.getElementById("relTitle").firstChild.textContent = `Tests with ${t?.tag || "this version"} `;
+  document.getElementById("relSub").innerHTML = rel ? relPill(rel) + ` · <a href="${esc(rel.url)}">issue ↗</a>` : "not validated from the queue yet";
+  const order = rel ? rel.tests.filter(x => x.state === "todo").sort((a, b) => (a.median_s ?? 1e12) - (b.median_s ?? 1e12)).map(x => x.name) : [];
+  const states = t ? testStates(t.tag) : {};
+  document.getElementById("tested").innerHTML = (overview?.tests || []).map(x => {
+    const {rel: r, run} = states[x.name] || {};
+    const inRel = !r ? `<span class="muted">—</span>`
+      : r.state === "todo" ? `<span class="pill idle">Queued #${order.indexOf(x.name) + 1}</span>`
+      : `<a class="pill ${cls(r.state === "requested" ? "queued" : r.state)}" href="${esc(r.url || rel.url)}">${esc(label(r.state === "requested" ? "queued" : r.state))}</a>`;
+    const median = r?.median_s != null ? `<div class="sub">median ${fmtDur(r.median_s)}</div>` : "";
+    return `<tr><td class="name"><a class="t" href="test.html?t=${encodeURIComponent(x.name)}">${esc(x.name)}</a></td>
+      <td>${inRel}${median}</td>
+      <td>${run ? `<a class="pill ${cls(runState(run))}" href="${esc(run.url)}">${esc(label(runState(run)))}</a>
+        <div class="sub" title="${esc(fullDate(run.started_at))}">${ago(run.started_at)} · ${esc(run.event)}</div>` : `<span class="pill idle">Not run</span>`}</td>
+      <td class="mono">${fmtDur(r?.duration_s ?? run?.duration_s)}</td>
+      <td>${cmpCell(x.name, ver)}</td></tr>`;
+  }).join("") || `<tr><td colspan="5" class="empty">No tests</td></tr>`;
+}
+
+function renderMatrix() {
+  const vers = [...new Set([...Object.keys(g4.tested), ...Object.keys(g4.compared), ...g4.releases.map(r => version(r.tag))])]
+    .sort((a, b) => versionCmp(b, a)).slice(0, 8);
+  const tagOf = v => g4.tags.find(t => version(t.tag) === v)?.tag || `v${v}`;
+  document.getElementById("mhead").innerHTML = `<tr><th>Test</th>${vers.map(v => `<th class="v"><a href="?v=${encodeURIComponent(tagOf(v))}" data-v="${esc(tagOf(v))}">${esc(v)}</a></th>`).join("")}</tr>`;
+  document.getElementById("matrix").innerHTML = !vers.length ? `<tr><td class="empty">No test has run with a known Geant4 version yet</td></tr>`
+    : (overview?.tests || []).map(x => `<tr><td class="name"><a class="t" href="test.html?t=${encodeURIComponent(x.name)}">${esc(x.name)}</a></td>${vers.map(v => {
+      const st = testStates(tagOf(v))[x.name], c = g4.compared[v]?.[x.name];
+      const changed = c?.summary?.changed, href = c?.reference ? `compare.html?t=${encodeURIComponent(x.name)}&v=${encodeURIComponent(v)}` : st?.run?.url || st?.rel?.url;
+      if (!st?.state && !c) return `<td class="c"><span class="cell none">·</span></td>`;
+      // Published results of a version mean that its pipeline passed, even with no run on record.
+      const state = st?.state || (c ? "success" : null), css = cls(state);
+      const text = ({ok: "✓", bad: "✗", run: "…", gate: "!"}[css] || "·") + (changed ? ` Δ${changed}` : "");
+      const tip = `${x.name} · Geant4 ${v}: ${label(state || "not_run")}${c?.reference ? ` · ${changed} of ${c.plots} plots changed vs ${c.reference}` : ""}`;
+      return `<td class="c">${href ? `<a class="cell ${css}" href="${esc(href)}" title="${esc(tip)}">${esc(text)}</a>` : `<span class="cell ${css}" title="${esc(tip)}">${esc(text)}</span>`}</td>`;
+    }).join("")}</tr>`).join("");
+  document.querySelectorAll("#mhead a[data-v]").forEach(a => a.onclick = e => { e.preventDefault(); select(a.dataset.v); scrollTo({top: 0}); });
 }
 
 function render() {
   fillSelect();
   renderLaunch();
-  const t = current(), tested = t ? g4.tested[version(t.tag)] || {} : {};
-  document.getElementById("testedTitle").firstChild.textContent = `Tests with ${t?.tag || "this version"} `;
-  document.getElementById("tested").innerHTML = (overview?.tests || []).map(x => {
-    const r = tested[x.name];
-    return `<tr><td class="name"><a class="t" href="test.html?t=${encodeURIComponent(x.name)}">${esc(x.name)}</a></td>
-      <td>${r ? `<a class="pill ${cls(runState(r))}" href="${esc(r.url)}">${esc(label(runState(r)))}</a>` : `<span class="pill idle">Not run</span>`}</td>
-      <td>${r ? `<span title="${esc(fullDate(r.started_at))}">${ago(r.started_at)}</span> <span class="sub">· ${esc(r.event)}</span>` : "—"}</td></tr>`;
-  }).join("") || `<tr><td colspan="3" class="empty">No tests</td></tr>`;
-
-  document.getElementById("runs").innerHTML = g4.runs.map(r => `<tr>
-      <td>${r.tag ? `<a class="mono" href="?v=${encodeURIComponent(r.tag)}" data-v="${esc(r.tag)}">${esc(r.tag)}</a>` : "—"}</td>
-      <td><span title="${esc(fullDate(r.started_at))}">${ago(r.started_at)}</span></td>
-      <td>${esc(r.actor || "—")}<div class="sub">${esc(r.event)}</div></td><td>${outcome(r)}</td></tr>`).join("")
-    || `<tr><td colspan="4" class="empty">No validation started yet</td></tr>`;
+  renderTested(current());
+  renderMatrix();
+  const rels = [...g4.releases].sort((a, b) => b.created_at.localeCompare(a.created_at));
+  document.getElementById("runs").innerHTML = rels.map(r => `<tr>
+      <td><a class="mono" href="?v=${encodeURIComponent(r.tag)}" data-v="${esc(r.tag)}">${esc(r.tag)}</a></td>
+      <td><span title="${esc(fullDate(r.created_at))}">${ago(r.created_at)}</span>${r.closed_at ? `<div class="sub">finished ${ago(r.closed_at)}</div>` : ""}</td>
+      <td>${esc(r.requested_by || "—")}<div class="sub">at most ${esc(r.max_parallel)} at a time</div></td>
+      <td>${relPill(r)}</td><td><a href="${esc(r.url)}">#${esc(r.url.split("/").pop())} ↗</a></td></tr>`).join("")
+    || `<tr><td colspan="5" class="empty">No validation started yet</td></tr>`;
   document.querySelectorAll("#runs a[data-v]").forEach(a => a.onclick = e => { e.preventDefault(); select(a.dataset.v); scrollTo({top: 0}); });
+  document.getElementById("relrepo").textContent = g4.release_repo;
 
   document.getElementById("banners").innerHTML =
     g4.base_builds.map(b => `<div class="banner">A base image build is ${esc(label(b.status).toLowerCase())} since ${since(b.started_at)} · <a href="${esc(b.url)}">follow it ↗</a></div>`).join("") +
     g4.errors.map(e => `<div class="banner bad">${esc(e)}</div>`).join("");
   document.getElementById("links").innerHTML = [
     [`${g4.upstream}/tags`, "Geant4 tags"], [`https://github.com/${g4.base_repo}/actions/workflows/${g4.base_workflow}`, "Base image builds"],
-    [`https://github.com/${g4.release_repo}/actions/workflows/${g4.release_workflow}`, "Validations"]]
+    [`https://github.com/${g4.release_repo}/issues?q=label%3Ageant4-release`, "Validations"]]
     .map(([u, l]) => `<a class="btn" href="${esc(u)}">${esc(l)} ↗</a>`).join("");
-  document.getElementById("wfname").textContent = g4.release_workflow;
   setUpdated(document.getElementById("updated"), g4.generated_at);
 }
 
@@ -177,6 +267,7 @@ function select(tag) {
   render();
 }
 sel.onchange = () => select(sel.value);
+parSel.onchange = renderLaunch;
 
 // Whether the token's account can start workflows in ci-workflows (write access).
 async function checkPermission() {
@@ -193,7 +284,7 @@ async function checkPermission() {
 // ------------------------------------------------------------------ start and follow
 const note = html => document.getElementById("note").innerHTML = html;
 
-goBtn.onclick = () => {
+function confirmStart(tests) {
   const t = current();
   if (!t) return;
   if (!local.get(TOKEN_KEY)) {
@@ -201,21 +292,26 @@ goBtn.onclick = () => {
     return;
   }
   const dlg = document.getElementById("confirm");
-  dlg.querySelector("h3").textContent = `Run every test with Geant4 ${t.tag}?`;
-  dlg.querySelector("ul").innerHTML = document.getElementById("plan").innerHTML;
-  dlg.onclose = () => dlg.returnValue === "ok" && start(t.tag);
+  dlg.querySelector("h3").textContent = tests ? `Rerun ${tests.length} failed test${tests.length === 1 ? "" : "s"} with Geant4 ${t.tag}?`
+    : `Run every test with Geant4 ${t.tag}?`;
+  dlg.querySelector("ul").innerHTML = tests ? `<li>${tests.map(esc).join(", ")}</li><li>At most ${esc(parSel.value)} at a time, fastest first.</li>`
+    : document.getElementById("plan").innerHTML;
+  dlg.onclose = () => dlg.returnValue === "ok" && start(t.tag, tests);
   dlg.returnValue = "";
   dlg.showModal();
-};
+}
+goBtn.onclick = () => confirmStart(null);
+rerunBtn.onclick = () => confirmStart(failedTests(current().tag));
 
-async function start(tag) {
+async function start(tag, tests) {
   const clicked = Date.now() - 15000;  // tolerate clock skew with GitHub
   launch = {tag, done: false};
   note("Starting…");
   renderLaunch();
   try {
     await ghApi(`/repos/${g4.release_repo}/actions/workflows/${g4.release_workflow}/dispatches`, {method: "POST",
-      headers: {"Content-Type": "application/json"}, body: JSON.stringify({ref: "main", inputs: {geant4_tag: tag}})});
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({ref: "main", inputs: {geant4_tag: tag, tests: (tests || []).join(","), max_parallel: parSel.value}})});
   } catch (e) {
     launch.done = true;
     note(`<span class="warn">${e.status === 401 ? "The token was rejected: expired or revoked?"
@@ -224,7 +320,8 @@ async function start(tag) {
     renderLaunch();
     return;
   }
-  // Find the new run, then follow it until it has started the tests or the image build.
+  // Follow the request until it is recorded in the validation's issue.
+  const issues = `https://github.com/${g4.release_repo}/issues?q=${encodeURIComponent(`label:geant4-release "Geant4 ${tag} validation"`)}`;
   let run = null;
   for (let i = 0; i < 40 && !launch.done; i++) {
     await new Promise(r => setTimeout(r, run ? 5000 : 3000));
@@ -236,12 +333,8 @@ async function start(tag) {
       } else run = await ghApi(`/repos/${g4.release_repo}/actions/runs/${run.id}`);
       const link = `<a href="${esc(run.html_url)}" target="_blank" rel="noopener">run ↗</a>`;
       if (run.status !== "completed") { note(`${esc(label(run.status))} · ${link}`); continue; }
-      const {jobs} = await ghApi(`/repos/${g4.release_repo}/actions/runs/${run.id}/jobs`);
-      const base = jobs.find(j => j.name === "build-base-image");
-      const tests = jobs.filter(j => !["list-tests", "build-base-image"].includes(j.name) && j.conclusion === "success").length;
-      note(run.conclusion !== "success" ? `<span class="warn">The validation ${esc(label(run.conclusion).toLowerCase())}</span> · ${link}`
-        : base?.conclusion === "success" ? `Base image build started: the ${overview?.tests.length ?? ""} tests start once it is published · ${link}`
-        : `${tests} test pipelines started with ${esc(tag)} · ${link}`);
+      note(run.conclusion !== "success" ? `<span class="warn">The request ${esc(label(run.conclusion).toLowerCase())}</span> · ${link}`
+        : `Recorded: follow it in <a href="${esc(issues)}" target="_blank" rel="noopener">its issue ↗</a> (here at the next update).`);
       launch.done = true;
     } catch (e) {
       if (e.reset) { note("GitHub API limit reached: follow the run on GitHub."); launch.done = true; }
