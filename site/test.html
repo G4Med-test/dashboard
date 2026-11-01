@@ -50,7 +50,7 @@ td.num { white-space: nowrap; }
     <span class="seg" id="seg"></span></h2>
   <div class="panel">
     <table class="wide">
-      <thead><tr><th>Run</th><th>Started</th><th>Trigger</th><th>Scope</th><th>Status</th><th>Duration</th><th>Geant4</th><th>Published</th></tr></thead>
+      <thead><tr><th>Run</th><th>Started</th><th>Trigger</th><th>Scope</th><th>Ran on</th><th>Status</th><th>Duration</th><th>Geant4</th><th>Published</th></tr></thead>
       <tbody id="runs"></tbody>
     </table>
   </div>
@@ -58,7 +58,7 @@ td.num { white-space: nowrap; }
   <h2>Publications to validation-results <small id="pubnote"></small></h2>
   <div class="panel">
     <table>
-      <thead><tr><th>Date</th><th>Source commit</th><th>Geant4</th><th>Results commit</th></tr></thead>
+      <thead><tr><th>Date</th><th>Ran on</th><th>Source commit</th><th>Geant4</th><th>Results commit</th></tr></thead>
       <tbody id="pubs"></tbody>
     </table>
   </div>
@@ -154,12 +154,13 @@ function renderRuns() {
     <td title="${esc(fullDate(r.started_at))}">${fmtDate(r.started_at)}<div class="sub">${ago(r.started_at)}</div></td>
     <td>${trigger(r)}</td>
     <td>${r.scope ? `<span class="${r.scope === "github" ? "muted" : ""}">${scopeLabel(r.scope)}</span>` : "—"}</td>
+    <td>${whereCell(r)}</td>
     <td>${statusCell(r)}</td>
     <td class="mono">${fmtDur(r.duration_s)}</td>
     <td>${r.geant4 ? `<span class="mono">${esc(r.geant4)}</span>` : "—"}</td>
     <td>${r.published ? `<a href="${esc(r.published.commit_url)}">${ago(r.published.date)} ↗</a>`
         : r.publish && !["not_run", "skipped"].includes(r.publish) ? `<span class="pill ${cls(r.publish)}">${esc(label(r.publish))}</span>` : `<span class="muted">—</span>`}</td>
-  </tr>`).join("") : `<tr><td colspan="8" class="empty">No runs</td></tr>`;
+  </tr>`).join("") : `<tr><td colspan="9" class="empty">No runs</td></tr>`;
 }
 
 function renderPubs() {
@@ -167,10 +168,11 @@ function renderPubs() {
   document.getElementById("pubnote").textContent = pubs.length ? `${pubs.length} in total` : "";
   document.getElementById("pubs").innerHTML = pubs.length ? pubs.map(p => `<tr>
     <td title="${esc(fullDate(p.date))}">${fmtDate(p.date)} <span class="sub">· ${ago(p.date)}</span></td>
+    <td>${originCell(p)}</td>
     <td>${p.sha ? `<a class="mono" href="${esc(test.links.repo)}/commit/${esc(p.sha)}">${esc(p.sha.slice(0, 7))}</a>` : "—"}</td>
     <td class="mono">${esc(p.geant4_version || "—")}</td>
     <td><a class="mono" href="${esc(p.commit_url)}">${esc(p.commit.slice(0, 7))}</a> <span class="sub">${esc(p.subject)}</span></td>
-  </tr>`).join("") : `<tr><td colspan="4" class="empty">Nothing published yet</td></tr>`;
+  </tr>`).join("") : `<tr><td colspan="5" class="empty">Nothing published yet</td></tr>`;
 }
 
 function renderHeader() {
@@ -191,7 +193,7 @@ function renderHeader() {
     [test.runs.length, "Runs shown"],
     [full.length ? `${Math.round(100 * passed.length / full.length)}%` : "—", `Full pipelines passed (${passed.length}/${full.length})`],
     [fmtDur(median(passed.map(r => r.duration_s).filter(Boolean))), "Median duration (passed)"],
-    [lastPub ? ago(lastPub.date) : "—", lastPub ? `Last published · Geant4 ${lastPub.geant4_version || "?"}` : "Never published"],
+    [lastPub ? ago(lastPub.date) : "—", lastPub ? `Last published · Geant4 ${lastPub.geant4_version || "?"}${lastPub.runner ? " · local run" : ""}` : "Never published"],
     [test.prs.filter(p => p.state === "awaiting_approval").length, "PRs awaiting approval", "attn"],
     [versions.length ? versions.slice(0, 3).join(", ") : "—", "Geant4 versions in these runs"],
   ];

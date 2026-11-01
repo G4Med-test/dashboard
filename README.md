@@ -10,8 +10,9 @@ Static GitHub Pages site showing every G4Med test that uses
 - **Test page** (`test.html?t=<name>`): links to the repository, Actions, pull requests and
   the test's folder in `validation-results`; open pull requests with an *Opened → GitHub
   checks → Approval → Padova & validation* tracker and the button to approve or follow the
-  run; duration chart; every run (filterable) with stage bar, scope, Geant4 version and
-  publication; every publication to `validation-results`.
+  run; duration chart; every run (filterable) with stage bar, scope, where it ran, Geant4
+  version and publication; every publication to `validation-results`, from the CI or from
+  a local or farm run.
 - **Geant4 versions** (`geant4.html?v=<tag>`): every tag of
   [Geant4/geant4](https://github.com/Geant4/geant4/tags) that the base image can be built
   from and whether `ghcr.io/g4med-test/geant4-alma9:<tag>` is published; for the chosen
@@ -48,6 +49,8 @@ are still pending.
 | Tests | repos of the org whose `.github/workflows/ci.yml` calls `pipeline.yml` (or `ci-workflows/tests.json`, if present) |
 | Stage bar | jobs of the run: build · unit test (GitHub) · unit test (Padova) · validation · collect JSON · publish results; hover for durations |
 | Scope | *Full pipeline* if any Padova job started, else *GitHub checks only* |
+| Ran on | runner of each job: *GitHub* (GitHub-hosted), *Padova* (`geant-gha-runner-on-padova`) or the label of another runner set; hover for every stage and the Padova runners. Runs indexed before this was recorded show the places fixed by `pipeline.yml` |
+| Publication origin | `runner` of `provenance.json`: absent for the CI (linked to the run that published it), `local-pipeline:<user>@<host>` for ci-workflows' `local-pipeline.sh`, shown as *Local run* |
 | Geant4 | `Geant4 <version>` annotation of the build job (see below), otherwise `provenance.json` of the matching publication |
 | Published | commit of `validation-results/<test>/` whose `provenance.json` points to the run's commit |
 | Overview status | last non-PR run; pull-request runs are shown in the *Pull requests* column |

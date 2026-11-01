@@ -44,17 +44,50 @@ function versionCmp(a, b) {
   return x[4] < y[4] ? -1 : x[4] > y[4] ? 1 : 0;
 }
 
+// Where each stage runs in pipeline.yml: shown for runs collected before collect.py
+// recorded where their jobs ran (completed runs are cached with their stages).
+const STAGE_PLACE = {"build": "GitHub", "unit-test": "GitHub", "unit-test-padova": "Padova",
+                     "run-macro": "Padova", "collect-json": "GitHub", "publish-results": "GitHub"};
+const stageStarted = s => s?.state && !["skipped", "queued", "pending", "waiting", "requested"].includes(s.state);
+const stageWhere = (k, s) => s?.where?.length ? s.where : stageStarted(s) ? [STAGE_PLACE[k]] : [];
+
 function stagesBar(stages) {
   if (!stages) return "";
   return `<div class="stages">${STAGES.map(([k, name]) => {
-    const s = stages[k], st = s?.state, c = cls(st);
+    const s = stages[k], st = s?.state, c = cls(st), where = stageWhere(k, s);
     const css = st === "skipped" ? "s-skip" : {ok: "s-ok", bad: "s-bad", run: "s-run", gate: "s-gate"}[c] || "";
-    const tip = `${name}: ${label(st || "not_run")}${s?.duration_s != null ? " · " + fmtDur(s.duration_s) : ""}${s?.jobs > 1 ? ` · ${s.jobs} jobs` : ""}`;
+    const tip = `${name}: ${label(st || "not_run")}${where.length ? " on " + where.join(", ") : ""}${s?.duration_s != null ? " · " + fmtDur(s.duration_s) : ""}${s?.jobs > 1 ? ` · ${s.jobs} jobs` : ""}`;
     return `<span class="stage ${css}" title="${esc(tip)}"></span>`;
   }).join("")}</div>`;
 }
 
 const scopeLabel = s => s === "github" ? "GitHub checks only" : s === "full" ? "Full pipeline" : "—";
+
+// Where a CI run ran: the places of its stages, the validation's below; every stage and
+// self-hosted runner on hover.
+function whereCell(r) {
+  if (!r.stages) return `<span class="muted">—</span>`;
+  const places = [], tip = [];
+  for (const [k, name] of STAGES) {
+    const s = r.stages[k], where = stageWhere(k, s);
+    if (!where.length) continue;
+    where.forEach(p => places.includes(p) || places.push(p));
+    tip.push(`${name}: ${where.join(", ")}${s.runners?.length ? ` (${s.runners.join(", ")})` : ""}`);
+  }
+  if (!places.length) return `<span class="muted">—</span>`;
+  const v = r.stages["run-macro"], vw = stageWhere("run-macro", v), n = v?.runners?.length;
+  const sub = vw.length ? `validation on ${vw.join(", ")}${n ? ` · ${n} runner${n > 1 ? "s" : ""}` : ""}` : "";
+  return `<span title="${esc(tip.join("\n"))}">${esc(places.join(" + "))}</span>${sub ? `<div class="sub">${esc(sub)}</div>` : ""}`;
+}
+
+// Where published results come from: the CI, or a run of ci-workflows' local-pipeline.sh
+// on a workstation or a farm (provenance.json "runner": "local-pipeline:<user>@<host>").
+const runnerHost = runner => runner.replace(/^local-pipeline:/, "");
+function originCell(p) {
+  if (p.runner) return `<span class="pill local" title="${esc(p.runner)}">Local run</span><div class="sub mono">${esc(runnerHost(p.runner))}</div>`;
+  const where = p.validation_where?.length ? ` · validation on ${p.validation_where.join(", ")}` : "";
+  return `CI${esc(where)}${p.run_url ? ` · <a href="${esc(p.run_url)}">run ↗</a>` : ""}`;
+}
 
 // Pull-request states produced by collect.py (pr_status).
 const PR_STATES = {

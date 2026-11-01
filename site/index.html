@@ -89,6 +89,7 @@ function publishCell(t) {
   }
   if (p) {
     out += `<div class="sub">last: <a href="${esc(t.links.results)}">${ago(p.date)}</a>${p.plots != null ? ` · ${p.plots} plot${p.plots === 1 ? "" : "s"}` : ""}</div>`;
+    if (p.runner) out += `<div class="sub" title="${esc(p.runner)}">from a local run · <span class="mono">${esc(runnerHost(p.runner))}</span></div>`;
     if (l && p.sha !== l.sha && l.conclusion === "success") out += `<div class="warn">published commit ≠ last run</div>`;
   } else out += `<div class="sub">nothing published yet</div>`;
   return out;
