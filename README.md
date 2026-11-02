@@ -97,6 +97,10 @@ runner: the PR diff is what needs reviewing.
 The Geant4 version of each run comes from the `Geant4 <version>` annotation of the build
 job (ci-workflows' `apptainer-build-deploy.yml`, formerly `ci-workflows-geant4-version.patch`);
 runs from before it have the version only if their results were published.
+A version is the Geant4 tag without its `v` (`11.5.0.beta`). Builds older than that rule
+reported `geant4-config --version`, which omits the suffix of pre-releases (`11.5.0` for
+`v11.5.0.beta`): the runs of a validation take the version of its tag instead, and
+published results the tag in their image name (`<image>:<sha>-v11.5.0.beta`).
 
 ## Validating a Geant4 version
 
