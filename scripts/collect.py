@@ -312,6 +312,19 @@ def git(*args):
     return subprocess.run(["git", "-C", str(RESULTS_DIR), *args], capture_output=True, text=True).stdout
 
 
+# Image of published results: <test image>:<commit SHA>[-<Geant4 tag>].
+IMAGE_GEANT4_TAG = re.compile(r":[0-9a-f]{40}-v(\d+\.\d+\.\d+\S*)$")
+
+
+def provenance_version(prov):
+    """Geant4 version of published results. Before ci-workflows named versions after the
+    Geant4 tag, geant4_version was geant4-config --version, which omits the suffix of
+    pre-releases (11.5.0 for v11.5.0.beta): the tag in the image name restores it."""
+    version = prov.get("geant4_version")
+    m = IMAGE_GEANT4_TAG.search(prov.get("image") or "")
+    return m.group(1) if version and m and m.group(1).startswith(version) else version
+
+
 def read_publications():
     """Per test directory, every commit that changed it, newest first, with provenance."""
     out = {}
@@ -332,7 +345,7 @@ def read_publications():
             pubs.append({"commit": commit, "date": date, "subject": subject,
                          "commit_url": f"{remote}/commit/{commit}",
                          "sha": (prov.get("test_repo") or {}).get("sha"),
-                         "geant4_version": prov.get("geant4_version"),
+                         "geant4_version": provenance_version(prov),
                          # Set by ci-workflows' local-pipeline.sh (local or farm run); None for the CI.
                          "runner": prov.get("runner")})
         if not pubs:
@@ -465,7 +478,7 @@ def padova_status(summaries):
             "running_jobs": sum(p.get("running", 0) for p in active)}
 
 
-def geant4_versions(details):
+def geant4_versions(details, releases, releases_error):
     """geant4.json: what the Geant4 versions page offers and shows."""
     out = {"upstream": GEANT4_UPSTREAM.removesuffix(".git"), "image": f"ghcr.io/{BASE_IMAGE}",
            "release_repo": RELEASE_REPO, "release_workflow": RELEASE_WORKFLOW,
@@ -482,11 +495,14 @@ def geant4_versions(details):
         out["errors"].append(f"Base image tags unavailable: {err}")
     # published is None when GHCR could not be read: the page then says it is unknown.
     out["tags"] = [{"tag": t, "published": None if images is None else t in images} for t in tags]
+    out["releases"] = releases
+    if releases_error:
+        out["errors"].append(releases_error)
     try:
-        out["releases"], out["base_builds"] = release_issues(), base_builds()
+        out["base_builds"] = base_builds()
     except OSError as err:  # including HTTP errors
-        out["releases"], out["base_builds"] = [], []
-        out["errors"].append(f"Validations unavailable: {err}")
+        out["base_builds"] = []
+        out["errors"].append(f"Base image builds unavailable: {err}")
     try:
         out["compared"] = comparisons()
     except (OSError, ValueError, KeyError) as err:
@@ -508,7 +524,7 @@ def geant4_versions(details):
 
 # ------------------------------------------------------------------------ tests
 
-def collect_test(repo, publications, cache, used_keys):
+def collect_test(repo, publications, cache, used_keys, validated):
     full = repo["full_name"]
     raw = api_pages(f"/repos/{full}/actions/workflows/{WORKFLOW_FILE}/runs", key="workflow_runs",
                     limit=RUNS_PER_TEST) if RUNS_PER_TEST else []
@@ -533,6 +549,8 @@ def collect_test(repo, publications, cache, used_keys):
     for rec in runs:
         if rec.get("geant4"):
             rec["geant4_source"] = "build"
+        if rec["url"] in validated:
+            rec["geant4"], rec["geant4_source"] = validated[rec["url"]], "validation"
         p = by_sha.get(rec["sha"])
         if p and rec["status"] == "completed" and rec.get("publish") == "success":
             rec["published"] = {"date": p["date"], "commit_url": p["commit_url"]}
@@ -573,14 +591,22 @@ def main():
         except ValueError:
             pass
     publications, results_url = read_publications()
+    try:
+        releases, releases_error = release_issues(), None
+    except OSError as err:  # including HTTP errors
+        releases, releases_error = [], f"Validations unavailable: {err}"
+    # The runs of a validation used its Geant4 tag. Builds from before ci-workflows named
+    # versions after the tag reported geant4-config --version, which omits the suffix
+    # of pre-releases (11.5.0 for v11.5.0.beta).
+    validated = {t["url"]: r["tag"].removeprefix("v") for r in releases for t in r["tests"] if t.get("url")}
     used_keys, summaries, details = set(), [], []
     (OUTPUT_DIR / "tests").mkdir(parents=True, exist_ok=True)
     for repo in discover_tests():
-        summary, detail = collect_test(repo, publications, cache, used_keys)
+        summary, detail = collect_test(repo, publications, cache, used_keys, validated)
         summaries.append(summary)
         details.append(detail)
         (OUTPUT_DIR / "tests" / f"{repo['name']}.json").write_text(json.dumps(detail, indent=1) + "\n")
-    geant4 = geant4_versions(details)
+    geant4 = geant4_versions(details, releases, releases_error)
 
     data = {
         "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
