@@ -66,6 +66,7 @@ a.pill:hover { text-decoration: none; filter: brightness(.95); }
 .run::before { animation: pulse 1.2s ease-in-out infinite; }
 .gate { color: var(--gate); background: var(--gate-bg); }
 .idle { color: var(--idle); background: var(--idle-bg); }
+.local { color: var(--accent); background: var(--hover); box-shadow: inset 0 0 0 1px var(--line); }
 @keyframes pulse { 50% { opacity: .25; } }
 @media (prefers-reduced-motion: reduce) { .run::before { animation: none; } }
 .sub { font-size: 12px; color: var(--muted); margin-top: 3px; }

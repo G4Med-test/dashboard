@@ -57,6 +57,8 @@ EXCLUDE = {"ci-workflows", "validation-results", "geant4-alma9", "template", "da
 WORKFLOW_FILE = "ci.yml"
 VERSION_ANNOTATION = re.compile(r"^Geant4\s+(\S+)$")
 PADOVA_LABEL = "geant-gha-runner-on-padova"
+GITHUB_HOSTED = "GitHub Actions"  # runner group (and name prefix) of GitHub-hosted runners
+PLACES = {PADOVA_LABEL: "Padova"}  # runs-on label of a self-hosted runner set → place shown
 COMPARE_TOOLS = Path(os.environ.get("COMPARE_TOOLS", "ci-workflows/validation"))
 
 # Pipeline stages in order; the first group runs on GitHub, the second needs approval.
@@ -155,6 +157,16 @@ def worst(states):
     return min(states, key=lambda s: order.index(s) if s in order else len(order))
 
 
+def job_location(job):
+    """Where a job ran: GitHub, Padova, or the label of another runner set; None if it never started."""
+    if not job.get("runner_name"):
+        return None
+    if job.get("runner_group_name") == GITHUB_HOSTED or job["runner_name"].startswith(GITHUB_HOSTED):
+        return "GitHub"
+    labels = job.get("labels") or []
+    return next((PLACES[label] for label in labels if label in PLACES), labels[0] if labels else job["runner_name"])
+
+
 def job_details(full, run):
     """Stages, scope, current job and Geant4 version of one run (3-4 API calls)."""
     jobs = api_pages(f"/repos/{full}/actions/runs/{run['id']}/jobs", key="jobs")
@@ -166,11 +178,15 @@ def job_details(full, run):
         if stage == "other":
             continue
         starts = [j["started_at"] for j in js if j.get("started_at") and j["conclusion"] != "skipped"]
+        ran = [j for j in js if j["conclusion"] != "skipped" and job_location(j)]
         ends = [j["completed_at"] for j in js if j.get("completed_at") and j["conclusion"] != "skipped"]
         stages[stage] = {
             "state": worst([j["conclusion"] or j["status"] for j in js]),
             "jobs": len(js),
             "duration_s": seconds_between(min(starts), max(ends)) if starts and ends else None,
+            # Where its jobs ran, and the self-hosted runners (GitHub-hosted ones are anonymous).
+            "where": sorted({job_location(j) for j in ran}),
+            "runners": sorted({j["runner_name"] for j in ran if job_location(j) != "GitHub"}),
         }
     running = [j for j in jobs if j["status"] == "in_progress"]
     current = None
@@ -316,7 +332,9 @@ def read_publications():
             pubs.append({"commit": commit, "date": date, "subject": subject,
                          "commit_url": f"{remote}/commit/{commit}",
                          "sha": (prov.get("test_repo") or {}).get("sha"),
-                         "geant4_version": prov.get("geant4_version")})
+                         "geant4_version": prov.get("geant4_version"),
+                         # Set by ci-workflows' local-pipeline.sh (local or farm run); None for the CI.
+                         "runner": prov.get("runner")})
         if not pubs:
             continue
         latest = pubs[0]
@@ -503,7 +521,15 @@ def collect_test(repo, publications, cache, used_keys):
     pub = publications.get(repo["name"])
     by_sha = {}
     for p in (pub or {}).get("history", []):
+        if p["runner"]:
+            continue  # a local or farm run: not the publication of a CI run of the same commit
         by_sha.setdefault(p["sha"], p)  # newest publication of that commit
+        # The CI run that published it: the newest of that commit whose publish passed before it.
+        run = next((r for r in runs if r["sha"] == p["sha"] and r.get("publish") == "success"
+                    and parse_time(r["started_at"]) <= parse_time(p["date"])), None)
+        if run:
+            p["run_url"] = run["url"]
+            p["validation_where"] = ((run.get("stages") or {}).get("run-macro") or {}).get("where")
     for rec in runs:
         if rec.get("geant4"):
             rec["geant4_source"] = "build"
