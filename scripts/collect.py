@@ -418,7 +418,8 @@ def release_issues():
                     "requested_by": state.get("requested_by"), "max_parallel": state.get("max_parallel"),
                     "image_requests": len(state.get("image_requests") or []),
                     "tests": [{"name": t["repo"].split("/")[1], **{k: t.get(k) for k in
-                               ("state", "url", "median_s", "duration_s", "attempts")}} for t in state.get("tests", [])]})
+                               ("state", "url", "median_s", "duration_s", "attempts", "reason")}}
+                              for t in state.get("tests", [])]})
     return out
 
 

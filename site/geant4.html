@@ -113,7 +113,8 @@ const parSel = document.getElementById("par");
 const version = tag => tag.replace(/^v/, "");  // tag → geant4-config --version
 const current = () => g4?.tags.find(t => t.tag === sel.value);
 const GEANT4_RELEASE = /^v\d+\.\d+\.\d+$/;
-const FINAL = new Set(["success", "failure", "cancelled", "timed_out", "startup_failure", "skipped", "neutral", "stale", "dispatch_failed"]);
+// not_applicable: the test's validation/config.json excludes the version (ci-workflows geant4_range.py).
+const FINAL = new Set(["success", "failure", "cancelled", "timed_out", "startup_failure", "skipped", "neutral", "stale", "dispatch_failed", "not_applicable"]);
 const FAILED = new Set(["failure", "cancelled", "timed_out", "startup_failure", "stale", "dispatch_failed"]);
 const PHASES = {"waiting-image": ["gate", "Waiting for the base image"], running: ["run", "Running"],
                 done: ["ok", "Finished"], failed: ["bad", "Failed"]};
@@ -145,13 +146,15 @@ function fillSelect() {
 
 function renderLaunch() {
   const t = current(), n = overview?.tests.length ?? 0, par = parSel.value;
-  const states = t ? Object.values(testStates(t.tag)) : [], done = states.filter(s => s.state);
+  const states = t ? Object.values(testStates(t.tag)) : [], na = states.filter(s => s.state === "not_applicable").length;
+  const done = states.filter(s => s.state && s.state !== "not_applicable");
   const passed = done.filter(s => s.state === "success").length, failed = t ? failedTests(t.tag) : [];
   document.getElementById("state").innerHTML = !t ? "" :
     (t.published ? `<span class="pill ok">Base image published</span>`
       : t.published === false ? `<span class="pill gate">Base image not built yet</span>`
       : `<span class="pill idle">Base image: unknown</span>`) +
-    ` <span class="sub">${done.length ? `${done.length} of ${n} tests run with it, ${passed} passed` : "no test run with it yet"}</span>`;
+    ` <span class="sub">${done.length ? `${done.length} of ${n - na} tests run with it, ${passed} passed` : "no test run with it yet"}` +
+    `${na ? ` · ${na} not applicable` : ""}</span>`;
 
   const image = t ? `<code>${esc(g4.image)}:${esc(t.tag)}</code>` : "";
   document.getElementById("plan").innerHTML = !t ? "" : [
@@ -181,9 +184,10 @@ function renderLaunch() {
 
 function relPill(rel) {
   const [c, text] = PHASES[rel.phase] || ["idle", rel.phase];
-  const done = rel.tests.filter(t => FINAL.has(t.state)).length, ok = rel.tests.filter(t => t.state === "success").length;
+  const na = rel.tests.filter(t => t.state === "not_applicable").length;
+  const done = rel.tests.filter(t => FINAL.has(t.state)).length - na, ok = rel.tests.filter(t => t.state === "success").length;
   const counts = rel.phase === "waiting-image" ? `build requested ${rel.image_requests}×`
-    : `${done}/${rel.tests.length} finished${done ? `, ${ok} passed` : ""}`;
+    : `${done}/${rel.tests.length - na} finished${done ? `, ${ok} passed` : ""}${na ? `, ${na} not applicable` : ""}`;
   return `<a class="pill ${c}" href="${esc(rel.url)}">${esc(text)}</a> <span class="sub">${esc(counts)}</span>`;
 }
 
@@ -206,6 +210,7 @@ function renderTested(t) {
     const {rel: r, run} = states[x.name] || {};
     const inRel = !r ? `<span class="muted">—</span>`
       : r.state === "todo" ? `<span class="pill idle">Queued #${order.indexOf(x.name) + 1}</span>`
+      : r.state === "not_applicable" ? `<span class="pill idle" title="${esc(r.reason || "")}">Not applicable</span><div class="sub">${esc(r.reason || "")}</div>`
       : `<a class="pill ${cls(r.state === "requested" ? "queued" : r.state)}" href="${esc(r.url || rel.url)}">${esc(label(r.state === "requested" ? "queued" : r.state))}</a>`;
     const median = r?.median_s != null ? `<div class="sub">median ${fmtDur(r.median_s)}</div>` : "";
     return `<tr><td class="name"><a class="t" href="test.html?t=${encodeURIComponent(x.name)}">${esc(x.name)}</a></td>
@@ -229,8 +234,9 @@ function renderMatrix() {
       if (!st?.state && !c) return `<td class="c"><span class="cell none">·</span></td>`;
       // Published results of a version mean that its pipeline passed, even with no run on record.
       const state = st?.state || (c ? "success" : null), css = cls(state);
-      const text = ({ok: "✓", bad: "✗", run: "…", gate: "!"}[css] || "·") + (changed ? ` Δ${changed}` : "");
-      const tip = `${x.name} · Geant4 ${v}: ${label(state || "not_run")}${c?.reference ? ` · ${changed} of ${c.plots} plots changed vs ${c.reference}` : ""}`;
+      const text = state === "not_applicable" ? "–" : ({ok: "✓", bad: "✗", run: "…", gate: "!"}[css] || "·") + (changed ? ` Δ${changed}` : "");
+      const tip = `${x.name} · Geant4 ${v}: ${label(state || "not_run")}${state === "not_applicable" && st.rel?.reason ? ` (${st.rel.reason})` : ""}` +
+        `${c?.reference ? ` · ${changed} of ${c.plots} plots changed vs ${c.reference}` : ""}`;
       return `<td class="c">${href ? `<a class="cell ${css}" href="${esc(href)}" title="${esc(tip)}">${esc(text)}</a>` : `<span class="cell ${css}" title="${esc(tip)}">${esc(text)}</span>`}</td>`;
     }).join("")}</tr>`).join("");
   document.querySelectorAll("#mhead a[data-v]").forEach(a => a.onclick = e => { e.preventDefault(); select(a.dataset.v); scrollTo({top: 0}); });
