@@ -32,7 +32,7 @@ const cls = st => ({success: "ok", failure: "bad", cancelled: "bad", timed_out: 
 const label = st => ({success: "Passed", failure: "Failed", cancelled: "Cancelled", timed_out: "Timed out",
   startup_failure: "Startup failure", in_progress: "Running", queued: "Queued", waiting: "Awaiting approval",
   pending: "Pending", requested: "Requested", skipped: "Skipped", neutral: "Neutral", not_run: "Not run",
-  action_required: "Awaiting approval", completed: "Completed"}[st] || st || "—");
+  action_required: "Awaiting approval", completed: "Completed", not_applicable: "Not applicable"}[st] || st || "—");
 
 const runState = r => r.status === "completed" ? r.conclusion : r.status;
 
